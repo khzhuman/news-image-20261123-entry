@@ -1,270 +1,204 @@
-// Content for the one-day world news page: Monday 23 November 2026.
-// Every string below is the page's editorial content: three lead stories,
-// ten illustrated cards, the UTC strip, the brief wire, the date check.
+// Content for the Monday 23 November 2026 front page (Template v4).
+// Every fact traces to local-grade/newsimage/research-23nov.md.
+// Headlines and briefs are sized to their boxes: complete, never cut off.
 
-export type RegionName =
-  | "Europe"
-  | "Americas"
-  | "Middle East"
-  | "Asia-Pacific"
-  | "Africa"
-  | "Global"
-  | "Oceania";
-
-export interface StoryCard {
-  scene: string; // key of the silhouette scene painter
-  fact: string; // the one big number/word painted over the scene
-  caption: string; // small caps line inside the scene (leads only, else "")
-  tag: string; // certainty + source chip, e.g. "CONFIRMED • REUTERS"
-  region: string; // right-hand region label, "" when the page shows none
+export interface Pictured {
+  n: number;
+  scene: string;
+  region: string;
+  regionLabel: string;
+  tag: string;
+  source: string;
   headline: string;
   brief: string;
+  fact?: string;
+  pin: [number, number]; // lon, lat
 }
 
-export const LEADS: StoryCard[] = [
+export const LEADS: Pictured[] = [
   {
-    scene: "chip",
-    fact: "+31%",
-    caption: "NVIDIA SHARES; NASDAQ +6.5%",
-    tag: "CONFIRMED • REUTERS",
-    region: "AMERICAS",
-    headline: "Huang returns as Nvidia chief; Wall Street roars back",
-    brief:
-      "Huang is back 11 days after resigning in scandal; shares jump 31% " +
-      "and Wall Street roars to a record rebound.",
+    n: 1, scene: "nvidia", region: "americas", regionLabel: "AMERICAS",
+    tag: "CONFIRMED", source: "REUTERS",
+    headline: "Nvidia reinstates Huang; Wall Street roars",
+    brief: "Back 11 days after resigning in scandal; shares +31% as Wall Street roars back.",
+    fact: "+31%", pin: [-122, 37],
   },
   {
-    scene: "courthouse",
-    fact: "9 YEARS",
-    caption: "IN EXILE, ENDED BY THE COURT",
-    tag: "CONFIRMED • REUTERS",
-    region: "EUROPE",
+    n: 2, scene: "puigdemont", region: "europe", regionLabel: "EUROPE",
+    tag: "CONFIRMED", source: "REUTERS",
     headline: "Puigdemont free to return after nine years in exile",
-    brief:
-      "The Supreme Court shelves the case; the Catalan leader may come " +
-      "home after nine years in exile in Belgium.",
+    brief: "The Supreme Court shelves the case; he may come home after nine years in Belgium.",
+    pin: [3, 42],
   },
   {
-    scene: "scales",
-    fact: "3M",
-    caption: "SEXUALISED IMAGES, CCDH COUNT",
-    tag: "CONFIRMED • AP",
-    region: "AMERICAS",
-    headline: "Two states sue Musk over Grok’s sexualised deepfakes",
-    brief:
-      "Virginia and Oregon file the first state suits over Grok’s " +
-      "sexualised deepfakes; the suits cite 3 million images.",
+    n: 3, scene: "grok", region: "americas", regionLabel: "AMERICAS",
+    tag: "CONFIRMED", source: "AP",
+    headline: "Two states sue Musk over Grok's sexualised deepfakes",
+    brief: "Virginia and Oregon file the first state suits; the filings cite 3 million images.",
+    pin: [-78, 38],
   },
 ];
 
-export const CARDS: StoryCard[] = [
+export const CARDS: Pictured[] = [
   {
-    scene: "bank",
-    fact: "60 BANKS",
-    caption: "",
-    tag: "CONFIRMED • AP",
-    region: "EUROPE",
+    n: 4, scene: "sanctions", region: "europe", regionLabel: "EUROPE",
+    tag: "CONFIRMED", source: "AP",
     headline: "EU unveils 22nd Russia sanctions",
-    brief:
-      "The package cuts 60 banks off SWIFT and hits crypto, 70 " +
-      "shadow-fleet ships and Russian flags.",
+    brief: "60 banks cut off SWIFT; crypto and 70 ships hit.",
+    pin: [4, 51],
   },
   {
-    scene: "factory",
-    fact: "24 DEAD",
-    caption: "",
-    tag: "CONFIRMED • REUTERS",
-    region: "",
-    headline: "Indonesia confirms 24 dead in candy-factory fire",
-    brief:
-      "The Cikande blaze broke out on Saturday; about 30 people are " +
-      "still missing in the burned factory.",
+    n: 5, scene: "fire", region: "asia", regionLabel: "ASIA-PACIFIC",
+    tag: "CONFIRMED", source: "REUTERS",
+    headline: "Indonesia: 24 dead in candy-factory fire",
+    brief: "Cikande blaze began Saturday; 30 still missing.",
+    pin: [106, -6],
   },
   {
-    scene: "gaza",
-    fact: "99%",
-    caption: "",
-    tag: "CONFIRMED • BBC",
-    region: "MIDDLE EAST",
-    headline: "Gaza is now a ‘toxic wasteland’, Oxfam warns",
-    brief:
-      "Oxfam says signs of contamination cover 99% of the territory; " +
-      "three more were killed on Monday.",
+    n: 6, scene: "gaza", region: "mideast", regionLabel: "MIDDLE EAST",
+    tag: "CONFIRMED", source: "BBC",
+    headline: "Gaza a 'toxic wasteland' — Oxfam",
+    brief: "Contamination signs cover 99% of the territory.",
+    pin: [34, 31],
   },
   {
-    scene: "skyline-arrow",
-    fact: "$43.9BN",
-    caption: "",
-    tag: "CONFIRMED • REUTERS",
-    region: "AMERICAS",
-    headline: "CrowdStrike to buy Zscaler in a $43.9bn deal",
-    brief:
-      "Zscaler holders get 1.135 CrowdStrike shares each, a 34% " +
-      "premium; the close is due in fiscal 2028.",
+    n: 7, scene: "merger", region: "americas", regionLabel: "AMERICAS",
+    tag: "CONFIRMED", source: "REUTERS",
+    headline: "CrowdStrike to buy Zscaler for $43.9bn",
+    brief: "A 34% premium; holders get 1.135 shares each.",
+    pin: [-98, 30],
   },
   {
-    scene: "stage",
-    fact: "74 LASHES",
-    caption: "",
-    tag: "CONFIRMED • REUTERS",
-    region: "",
-    headline: "Iran flogs singer Ahmadi 74 times over hijab video",
-    brief:
-      "Ahmadi and four of her team were lashed in Qom for a 2024 " +
-      "concert filmed without the mandatory hijab.",
+    n: 8, scene: "ahmadi", region: "mideast", regionLabel: "MIDDLE EAST",
+    tag: "CONFIRMED", source: "REUTERS",
+    headline: "Iran flogs singer Ahmadi 74 times",
+    brief: "Lashed in Qom over a 2024 concert without hijab.",
+    pin: [51, 35],
   },
   {
-    scene: "stadium",
-    fact: "4-0",
-    caption: "",
-    tag: "CONFIRMED • PREM LEAGUE",
-    region: "",
-    headline: "Brentford thrash Everton 4-0 on Monday night",
-    brief:
-      "Lewis-Potter scored twice in two minutes as Brentford closed " +
-      "Matchday 11 with a rout.",
+    n: 9, scene: "stadium", region: "europe", regionLabel: "EUROPE",
+    tag: "CONFIRMED", source: "PREM LEAGUE",
+    headline: "Brentford thrash Everton 4-0",
+    brief: "Lewis-Potter scored twice in two minutes.",
+    fact: "4-0", pin: [0, 52],
   },
   {
-    scene: "hospital",
-    fact: "700,000",
-    caption: "",
-    tag: "CONFIRMED • SKY NEWS",
-    region: "EUROPE",
-    headline: "AI breast-screening trial to invite 700,000 women",
-    brief:
-      "The EDITH trial will test AI-assisted mammogram reading at 30 " +
-      "UK sites over three years.",
+    n: 10, scene: "screening", region: "europe", regionLabel: "EUROPE",
+    tag: "CONFIRMED", source: "SKY NEWS",
+    headline: "AI breast-screening invites 700,000 women",
+    brief: "EDITH trial: AI mammograms at 30 UK sites.",
+    pin: [0, 52],
   },
   {
-    scene: "awacs",
-    fact: "AWACS",
-    caption: "",
-    tag: "CONFIRMED • REUTERS",
-    region: "EUROPE",
-    headline: "Russian drone enters Poland; NATO sends AWACS",
-    brief:
-      "A drone briefly crossed into Polish airspace in Russia’s night " +
-      "attack on western Ukraine.",
+    n: 11, scene: "awacs", region: "europe", regionLabel: "EUROPE",
+    tag: "CONFIRMED", source: "REUTERS",
+    headline: "Drone in Poland; NATO sends AWACS",
+    brief: "Drone crossed briefly in the night attack.",
+    pin: [19, 52],
   },
   {
-    scene: "barrels",
-    fact: "10,000 LB",
-    caption: "",
-    tag: "CONFIRMED • REUTERS",
-    region: "AMERICAS",
-    headline: "Trump halts the Iowa blast of 10,000 lb of explosive",
-    brief:
-      "The Army planned to detonate 68 barrels of degraded lead azide " +
-      "until a court stay stopped it.",
+    n: 12, scene: "iowa", region: "americas", regionLabel: "AMERICAS",
+    tag: "CONFIRMED", source: "REUTERS",
+    headline: "Trump halts Iowa blast of 10,000 lb",
+    brief: "68 barrels of lead azide; a court stay stopped it.",
+    pin: [-91, 41],
   },
   {
-    scene: "quake",
-    fact: "M6.5",
-    caption: "",
-    tag: "CONFIRMED • USGS",
-    region: "OCEANIA",
-    headline: "Deep M6.5 quake shakes the Pacific; no damage",
-    brief:
-      "The quake struck 601 km down in the Vanuatu region; a green " +
-      "alert was issued, with no damage.",
+    n: 13, scene: "quake", region: "oceania", regionLabel: "OCEANIA",
+    tag: "CONFIRMED", source: "USGS",
+    headline: "M6.5 quake shakes Pacific; no damage",
+    brief: "601 km deep; green alert, no damage reported.",
+    fact: "M6.5", pin: [170, -15],
+  },
+  {
+    n: 14, scene: "cobalt", region: "africa", regionLabel: "AFRICA",
+    tag: "CONFIRMED", source: "REUTERS",
+    headline: "Congo halts cobalt exports from 30 Nov",
+    brief: "Acts on oversupply, weak prices, rising stocks.",
+    pin: [25, -11],
+  },
+  {
+    n: 15, scene: "dymer", region: "europe", regionLabel: "EUROPE",
+    tag: "CONFIRMED", source: "REUTERS",
+    headline: "Kyiv-region strike toll rises to 15",
+    brief: "11 of the dead were in one five-storey block.",
+    pin: [30, 51],
   },
 ];
 
-// "THE DAY IN UTC" strip: four columns of two entries, read down each column.
-export const UTC_COLUMNS: string[][] = [
-  ["02:40|Vanuatu quake, M6.5", "15:35|EU unveils 22nd sanctions"],
-  ["09:00|Eurozone PMI holds, 51.7", "20:00|Brentford 4-0 Everton"],
-  ["14:20|Nvidia reinstates Huang", "20:41|Iran flogs singer Ahmadi"],
-  ["14:43|Fourteen nations press Myanmar", "21:00|Nasdaq closes +6.5%"],
+// Dense brief column: label + one short line each (28 briefs; 43 stories in all).
+export const BRIEFS: Array<[string, string, string]> = [
+  ["ITURI", "africa", "Fighting traps Ebola responders"],
+  ["IRAN", "mideast", "Courts say the US owes $290bn damages"],
+  ["HORMUZ", "mideast", "Iran vows to counter the US blockade"],
+  ["LIBYA", "europe", "Kyiv claims it sank the Merkury warship"],
+  ["ESTONIA", "europe", "Moscow warns of acts near open war"],
+  ["EU BUDGET", "europe", "Czech, Hungarian leaders reject it"],
+  ["KALININGRAD", "europe", "Russia: $576m for exclave ferries"],
+  ["CATHERINE", "europe", "Opens up on cancer in film 'Heal'"],
+  ["TRUMP", "americas", "Attacks Newsom's 548 commutations at DoJ"],
+  ["DEMOCRATS", "americas", "12 debates for 2028; first Jun 2027"],
+  ["HOUSE", "americas", "Majority confirmed at 258, most since 1992"],
+  ["CHAPO ISIDRO", "americas", "US seeks his extradition"],
+  ["49ERS", "americas", "Rout the Vikings 35-10 in Mexico City"],
+  ["NEPAL", "asia", "Modi gives NPR 24,000-crore rebuild aid"],
+  ["MEGASPEED", "asia", "US blacklists firm in Nvidia case"],
+  ["QUAKES", "asia", "PNG M5.0, Macquarie M5.5, China M4.9"],
+  ["WFP", "global", "Wars put food aid for 7.3m more at risk"],
+  ["OPCW", "global", "Faces a budget crisis over US arrears"],
+  ["WEBB", "global", "Maps dust inside Cassiopeia A remnant"],
+  ["NBA", "americas", "Heat win 7th straight; Nuggets 151-145 OT"],
+  ["AI PACT", "global", "Trump, Xi: humans keep mil. AI"],
+  ["SYRIA", "mideast", "US weighs training Syrian demining teams"],
+  ["MAGYAR", "europe", "Hungary's PM to travel to Ukraine 'soon'"],
+  ["ANDREW", "europe", "High Court told of a £750,000 'bribe'"],
+  ["PMI", "europe", "Eurozone holds at 51.7; France weak"],
+  ["CUBA", "americas", "WHO chief visits as health system fails"],
+  ["FBI", "americas", "Hit by a second cyber incident, says report"],
+  ["TINUBU", "africa", "Villa also suffers power outages"],
 ];
 
-export interface BriefLine {
-  who: string; // bold lead-in name
-  text: string; // rest of the one-line brief, after the em dash
-  region: RegionName;
-}
-
-// "THE REST OF THE DAY — in brief": stories 14–24 left, 25–35 right.
-export const BRIEFS: BriefLine[] = [
-  { who: "Congo", text: "halts cobalt exports from 30 Nov to lift prices.", region: "Africa" },
-  { who: "Ituri", text: "fighting traps Ebola responders; WHO pleads for peace.", region: "Africa" },
-  { who: "Iran", text: "courts say the US owes $290bn in damages.", region: "Middle East" },
-  { who: "Iran", text: "vows to counter the US blockade of Hormuz.", region: "Middle East" },
-  { who: "Libya", text: "Kyiv claims it sank the Merkuriy; Albania denies a role.", region: "Europe" },
-  { who: "Dymer", text: "toll rises to 15 as bodies come from the flats.", region: "Europe" },
-  { who: "Estonia", text: "Moscow warns of acts ‘on the verge of open war’.", region: "Europe" },
-  { who: "Babis", text: "joins Orban in rejecting the EU budget plan.", region: "Europe" },
-  { who: "Kaliningrad", text: "Russia to spend $576m on ferries for the exclave.", region: "Europe" },
-  { who: "Compass", text: "plans to move its listing to New York.", region: "Europe" },
-  { who: "Catherine", text: "opens up on cancer in BBC film ‘Heal’.", region: "Europe" },
-  { who: "Trump", text: "attacks Newsom’s 548 commutations at the Justice Dept.", region: "Americas" },
-  { who: "Gomez", text: "to resign after ethics finds sexual misconduct.", region: "Americas" },
-  { who: "Democrats", text: "plan 12 debates for 2028; first in June 2027.", region: "Americas" },
-  { who: "Democrats", text: "majority confirmed at 258, largest since 1992.", region: "Americas" },
-  { who: "Chapo Isidro", text: "US seeks extradition of the captured cartel boss.", region: "Americas" },
-  { who: "49ers", text: "rout the Vikings 35-10 in Mexico City.", region: "Americas" },
-  { who: "Modi", text: "gives Nepal a NPR 24,000-crore rebuild package.", region: "Asia-Pacific" },
-  { who: "Megaspeed", text: "US blacklists the firm at the heart of the Nvidia scandal.", region: "Asia-Pacific" },
-  { who: "Quakes", text: "PNG M5.0, Macquarie M5.5 and China M4.9; no damage.", region: "Asia-Pacific" },
-  { who: "WFP", text: "wars put food aid for 7.3m more people at risk.", region: "Global" },
-  { who: "OPCW", text: "faces a budget crisis over US arrears.", region: "Global" },
+// THE DAY IN UTC — exact, verified times only.
+export const UTC_STRIP: Array<[string, string]> = [
+  ["02:40", "Vanuatu quake, M6.5"],
+  ["09:00", "Eurozone PMI holds, 51.7"],
+  ["14:20", "Nvidia reinstates Huang"],
+  ["14:43", "14 nations press Myanmar"],
+  ["15:35", "EU unveils 22nd sanctions"],
+  ["20:00", "Brentford 4-0 Everton"],
+  ["20:41", "Iran flogs singer Ahmadi"],
+  ["21:00", "Nasdaq closes +6.5%"],
 ];
 
-export interface DateCheckItem {
-  name: string;
-  date: string; // the story's real date, printed in red
-  note: string;
-}
-
-export const DATE_CHECK_LEFT: DateCheckItem[] = [
-  { name: "COP31 collapses, no climate deal", date: "Sun 22 Nov", note: "the longest COP ever" },
-  { name: "Russian warship hit off Libya", date: "Sun 22 Nov", note: "Kyiv’s claim is today" },
-  { name: "Don Toliver concert evacuated", date: "Sun 22 Nov 22:00", note: "12,000 out; O2 show moved" },
-  { name: "Liverpool rout United 4-0", date: "Sun 22 Nov", note: "Pochettino’s debut" },
-  { name: "Mets agree $450M Skubal deal", date: "Sun 22 Nov", note: "a record for a pitcher" },
-  { name: "‘Molly’ Meldrum dies, 83", date: "Sun 22 Nov 18:30", note: "announced Monday" },
-  { name: "Dymer flats strike", date: "Sun 22 Nov", note: "today’s story is the toll" },
+// DATE CHECK — big stories left out, with their real dates.
+export const DATE_CHECK: string[] = [
+  "COP31 collapses, no deal — Sun 22 Nov — longest COP ever",
+  "Russian warship hit off Libya — Sun 22 Nov — claim is today",
+  "Don Toliver concert evacuated — Sun 22 Nov — 12,000 out",
+  "Liverpool rout United 4-0 — Sun 22 Nov — Pochettino debut",
+  "Mets agree $450M Skubal deal — Sun 22 Nov — pitcher record",
+  "'Molly' Meldrum dies, 83 — Sun 22 Nov — announced Monday",
+  "Dymer flats strike — Sun 22 Nov — today's story is the toll",
+  "Kryvyi Rih mall strike — Fri 20 Nov — toll 16 by Saturday",
+  "Missiles land in Poland — Fri 20 Nov — today: drone + AWACS",
+  "Sparta II ship hit — Sat 21 Nov — Finland summons envoy Mon",
+  "'Chapo Isidro' captured — Fri 20 Nov — extradition is today",
+  "ICJ: Myanmar genocide — Thu 19 Nov — 14 nations press Mon",
+  "Bayelsa boat capsizes — Fri 20 Nov — 29 dead, toll set Sun",
 ];
 
-export const DATE_CHECK_RIGHT: DateCheckItem[] = [
-  { name: "Kryvyi Rih mall strike", date: "Fri 20 Nov", note: "toll reached 16 on Saturday" },
-  { name: "Russian missiles land in Poland", date: "Fri 20 Nov", note: "today: drone + AWACS" },
-  { name: "Sparta II cargo ship hit", date: "Sat 21 Nov", note: "Finland summons envoy Monday" },
-  { name: "‘Chapo Isidro’ captured", date: "Fri 20 Nov", note: "extradition order is today" },
-  { name: "ICJ: Myanmar guilty of genocide", date: "Thu 19 Nov", note: "14 nations press Monday" },
-  { name: "Riemann proof claim", date: "Fri 20 Nov", note: "checks done Sat 21 Nov" },
-  { name: "Bayelsa boat capsizes", date: "Fri 20 Nov", note: "29 dead, toll set Sunday" },
-];
+export const NOT_YET =
+  "NOT YET — Amazon Leo launch, 24 Nov · US inflation + GDP data, 25 Nov · EU budget summit, 26-27 Nov · Thanksgiving, 26 Nov · Spain votes, 29 Nov · 'Heal' airs, 29 Nov · OPEC+ meets, 29 Nov";
 
-export const NOT_YET_TEXT =
-  "Amazon Leo launch, 24 Nov • US data, 25 Nov • Thanksgiving, 26 Nov • " +
-  "EU summit, 26-27 Nov • Spain votes, 29 Nov • “Heal” airs, 29 Nov • " +
-  "OPEC+, 29 Nov • Compass results, 24 Nov";
+export const REGION_BAR =
+  "Europe 14 · Americas 12 · Middle East 5 · Asia-Pacific 4 · Global 4 · Africa 3 · Oceania 1";
 
-export const LEGEND_LINES: string[] = [
-  "Europe 11 · Americas 10 · Middle East 5 · Asia-Pacific 4",
-  "Africa 2 · Global 2 · Oceania 1 — bar + pins by region",
-];
-
-// Region colours as [r, g, b], shared by the brief badges, the map pins
-// and the segmented bar under the map.
-export const REGION_RGB: Record<RegionName, [number, number, number]> = {
-  Europe: [30, 55, 92],
-  Americas: [18, 96, 84],
-  "Middle East": [166, 44, 30],
-  "Asia-Pacific": [110, 58, 130],
-  Africa: [176, 118, 20],
-  Global: [88, 82, 74],
-  Oceania: [38, 106, 150],
+export const REGION_COLORS: Record<string, [number, number, number]> = {
+  americas: [46, 125, 50],
+  europe: [30, 90, 168],
+  mideast: [123, 74, 160],
+  asia: [0, 121, 107],
+  africa: [196, 120, 20],
+  oceania: [38, 38, 38],
+  global: [110, 110, 110],
 };
-
-// Bar segments under the map, in order, with their story counts.
-export const BAR_SEGMENTS: { region: RegionName; count: number }[] = [
-  { region: "Europe", count: 11 },
-  { region: "Americas", count: 10 },
-  { region: "Middle East", count: 5 },
-  { region: "Asia-Pacific", count: 4 },
-  { region: "Africa", count: 2 },
-  { region: "Global", count: 2 },
-  { region: "Oceania", count: 1 },
-];
