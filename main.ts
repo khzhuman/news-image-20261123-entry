@@ -853,35 +853,71 @@ function drawCard(
     drawLine("sansB42", card.fact, sx + 12, factBase + 3, [10, 10, 12]);
     drawLine("sansB42", card.fact, sx + 10, factBase, CREAM);
   } else {
-    const factBase = sceneBottom - 8;
+    // baseline two rows higher than a flush fit, so even the deepest
+    // descender in the fact (the comma in "700,000") stays inside the scene
+    const factBase = sceneBottom - 10;
     drawLineSquash("sansB42", card.fact, sx + 4, factBase + 2, [10, 10, 12], 0.6);
     drawLineSquash("sansB42", card.fact, sx + 2, factBase, CREAM, 0.6);
   }
 
-  // certainty + source chip, region label to its right
+  // certainty + source chip, region label to its right. On the small cards
+  // the chip and the region are set one step down (sansB9, untracked): at
+  // sansB10 the pair is wider than the measure on five cards and the region
+  // ran underneath the chip.
   const tagY = y + (lead ? 137 : 58);
-  const tagW = textWidth("sansB10", card.tag) + 12;
-  fillRect(x + 10, tagY, tagW, 13, TAG_GREEN);
-  drawLine("sansB10", card.tag, x + 16, tagY + 10, WHITE);
-  if (card.region !== "") {
-    drawLineRight("sansB10", card.region, x + w - 10, tagY + 10, FAINT, 2);
+  if (lead) {
+    const tagW = textWidth("sansB10", card.tag) + 12;
+    fillRect(x + 10, tagY, tagW, 13, TAG_GREEN);
+    drawLine("sansB10", card.tag, x + 16, tagY + 10, WHITE);
+    if (card.region !== "") {
+      drawLineRight("sansB10", card.region, x + w - 10, tagY + 10, FAINT, 2);
+    }
+  } else {
+    const tagW = textWidth("sansB9", card.tag) + 10;
+    fillRect(x + 10, tagY, tagW, 13, TAG_GREEN);
+    drawLine("sansB9", card.tag, x + 15, tagY + 10, WHITE);
+    if (card.region !== "") {
+      drawLineRight("sansB9", card.region, x + w - 10, tagY + 10, FAINT, 0);
+    }
   }
 
   const headStyle = lead ? "serif19" : "serif14";
-  const headLines = wrap(headStyle, card.headline, w - 20);
-  const headFirst = y + (lead ? 170 : 89);
-  const headPitch = lead ? 23 : 20;
+  let headLines = wrap(headStyle, card.headline, w - 20);
+  let headSquash = 1;
+  if (!lead && headLines.length > 2) {
+    // a three-line headline would land its last line on the brief's first
+    // line (the AWACS card); compress the headline a touch and re-wrap on
+    // the wider effective measure so it closes up into two lines
+    headSquash = 0.9;
+    headLines = wrap(headStyle, card.headline, Math.floor((w - 20) / headSquash));
+  }
+  const headFirst = y + (lead ? 170 : 88);
+  const headPitch = lead ? 23 : 18;
   headLines.forEach((ln, i) => {
-    drawLine(headStyle, ln, x + 10, headFirst + i * headPitch, INK);
+    const base = headFirst + i * headPitch;
+    if (headSquash < 1) drawLineSquash(headStyle, ln, x + 10, base, INK, headSquash);
+    else drawLine(headStyle, ln, x + 10, base, INK);
   });
 
   const briefStyle = lead ? "sans11" : "sans11";
-  const briefLines = wrap(briefStyle, card.brief, w - 16);
-  const briefFirst = y + (lead ? 219 : 128);
+  let briefLines = wrap(briefStyle, card.brief, w - 16);
+  let briefSquash = 1;
+  if (!lead && briefLines.length > 3) {
+    // a four-line brief cannot fit the card (the sanctions and Zscaler
+    // cards): compress it slightly and re-wrap wider so it takes three
+    briefSquash = 0.92;
+    briefLines = wrap(briefStyle, card.brief, Math.floor((w - 16) / briefSquash));
+  }
+  // on the small cards the brief block is seated higher (first baseline
+  // y+121, pitch 12) so a three-line brief ends at y+145 with its ink
+  // clear of the card's bottom edge instead of sitting on it
+  const briefFirst = y + (lead ? 219 : 121);
   const briefPitch = lead ? 16 : 12;
   const briefInk = lead ? LEAD_BRIEF_INK : CARD_BRIEF_INK;
   briefLines.forEach((ln, i) => {
-    drawLine(briefStyle, ln, x + 10, briefFirst + i * briefPitch, briefInk);
+    const base = briefFirst + i * briefPitch;
+    if (briefSquash < 1) drawLineSquash(briefStyle, ln, x + 10, base, briefInk, briefSquash);
+    else drawLine(briefStyle, ln, x + 10, base, briefInk);
   });
 }
 
