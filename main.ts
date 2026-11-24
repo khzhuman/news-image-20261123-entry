@@ -1,602 +1,1059 @@
-/* THE WORLD IN ONE DAY — Monday 23 November 2026.
-   Engine v3 pattern, written fresh for this edition: scenes are painted on a
-   2x supersampled buffer and downsampled, and EVERY letter is blitted 1:1 from
-   a FreeType glyph atlas (atlas.dat) — no letter is ever drawn as a filled
-   outline. Node stdlib only, no network, deterministic: writes /output/entry.png. */
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { deflateSync, inflateSync } from 'node:zlib';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+// THE WORLD IN ONE DAY — Monday 23 November 2026.
+// A one-page newspaper rendered from a pre-baked glyph atlas: letterforms
+// are blitted as real raster bitmaps (never drawn as outlines), scenes are
+// painted as flat silhouettes on a 2x buffer and box-downsampled, and the
+// finished page is encoded as a PNG with only the Node standard library.
+
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { inflateSync, deflateSync } from "node:zlib";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
-  PAPER, CARD, INK, FAINT, HAIR, NAVY, TEAL, RUST, GOLD, MOSS, PLUM, SKY, CREAM,
-  TAGC, REGC, LEADS, CARDS, REST, STRIP, DATECHECK, NOTYET, LAND, PINS,
-  REGION_OF, REGION_COUNTS,
-} from './data.ts';
+  LEADS,
+  CARDS,
+  UTC_COLUMNS,
+  BRIEFS,
+  DATE_CHECK_LEFT,
+  DATE_CHECK_RIGHT,
+  NOT_YET_TEXT,
+  LEGEND_LINES,
+  REGION_RGB,
+  BAR_SEGMENTS,
+  type StoryCard,
+} from "./data.ts";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const PAGE = 1024, SS = 2, SW = PAGE * SS;
+type RGB = [number, number, number];
 
-/* ---------------- glyph atlas ---------------- */
-const blob = readFileSync(HERE + '/atlas.dat');
-const hlen = blob.readUInt32BE(0);
-const ATLAS = JSON.parse(blob.toString('utf8', 4, 4 + hlen));
-const ALPHA = inflateSync(blob.subarray(4 + hlen));
-const AW = ATLAS.width;
-function glyph(style, ch) {
-  const s = ATLAS.styles[style];
-  const g = s && s.glyphs[ch];
-  if (!g) return null;
-  return { x: g[0], y: g[1], w: g[2], h: g[3], dx: g[4], dy: g[5], adv: g[6] };
+const PAGE_W = 1024;
+const PAGE_H = 1024;
+
+const PAPER: RGB = [247, 242, 231];
+const CARD_BG: RGB = [255, 253, 246];
+const STRIP_BG: RGB = [239, 233, 216];
+const FRAME_LINE: RGB = [198, 188, 164];
+const INK: RGB = [26, 23, 19];
+const FAINT: RGB = [168, 158, 144];
+const TAG_GREEN: RGB = [24, 96, 56];
+const CREAM: RGB = [255, 244, 214];
+const WHITE: RGB = [255, 255, 255];
+const ALERT_RED: RGB = [166, 44, 30];
+const LEAD_BRIEF_INK: RGB = [73, 68, 60];
+const BODY_GRAY: RGB = [73, 68, 60];
+const CARD_BRIEF_INK: RGB = [124, 118, 110];
+
+// ---------------------------------------------------------------- atlas ---
+// atlas.dat: [4-byte BE header length][header JSON][zlib grayscale pixels]
+// glyph entry: [x, y, w, h, dx, dy, advance]; dx/dy place the ink's top-left
+// relative to the pen origin (pen x, baseline y).
+
+interface GlyphSet {
+  ascent: number;
+  descent: number;
+  glyphs: Record<string, number[]>;
 }
-export function textWidth(text, style, track = 0) {
+
+const here = dirname(fileURLToPath(import.meta.url));
+const atlasFile = readFileSync(join(here, "atlas.dat"));
+const headLen = atlasFile.readUInt32BE(0);
+const atlasHead = JSON.parse(atlasFile.subarray(4, 4 + headLen).toString("utf8"));
+const ATLAS_W: number = atlasHead.width;
+const atlasBits: Buffer = inflateSync(atlasFile.subarray(4 + headLen));
+const FONT: Record<string, GlyphSet> = atlasHead.styles;
+
+// ---------------------------------------------------------------- frame ---
+const frame = new Uint8Array(PAGE_W * PAGE_H * 3);
+
+function paintPixel(x: number, y: number, c: RGB): void {
+  if (x < 0 || y < 0 || x >= PAGE_W || y >= PAGE_H) return;
+  const i = (y * PAGE_W + x) * 3;
+  frame[i] = c[0];
+  frame[i + 1] = c[1];
+  frame[i + 2] = c[2];
+}
+
+function blendPixel(x: number, y: number, c: RGB, a: number): void {
+  if (x < 0 || y < 0 || x >= PAGE_W || y >= PAGE_H || a <= 0) return;
+  const i = (y * PAGE_W + x) * 3;
+  const keep = 255 - a;
+  frame[i] = Math.round((c[0] * a + frame[i] * keep) / 255);
+  frame[i + 1] = Math.round((c[1] * a + frame[i + 1] * keep) / 255);
+  frame[i + 2] = Math.round((c[2] * a + frame[i + 2] * keep) / 255);
+}
+
+function fillRect(x: number, y: number, w: number, h: number, c: RGB): void {
+  for (let yy = y; yy < y + h; yy++)
+    for (let xx = x; xx < x + w; xx++) paintPixel(xx, yy, c);
+}
+
+function strokeRect(x: number, y: number, w: number, h: number, c: RGB): void {
+  fillRect(x, y, w, 1, c);
+  fillRect(x, y + h - 1, w, 1, c);
+  fillRect(x, y, 1, h, c);
+  fillRect(x + w - 1, y, 1, h, c);
+}
+
+function fillCircle(cx: number, cy: number, r: number, c: RGB): void {
+  for (let yy = Math.floor(cy - r); yy <= cy + r; yy++)
+    for (let xx = Math.floor(cx - r); xx <= cx + r; xx++) {
+      const dx = xx - cx;
+      const dy = yy - cy;
+      if (dx * dx + dy * dy <= r * r) paintPixel(xx, yy, c);
+    }
+}
+
+// ----------------------------------------------------------------- text ---
+function glyphOf(style: string, ch: string): number[] {
+  const set = FONT[style].glyphs;
+  return set[ch] ?? set["?"] ?? [0, 0, 0, 0, 0, 0, 0];
+}
+
+function textWidth(style: string, s: string, tracking = 0): number {
   let w = 0;
-  for (const ch of text) { const g = glyph(style, ch); if (g) w += g.adv + track; }
-  return w - (text.length ? track : 0);
-}
-export function wrap(text, style, maxW, track = 0) {
-  const words = text.split(' ');
-  const lines = [];
-  let cur = '';
-  for (const word of words) {
-    const trial = cur ? cur + ' ' + word : word;
-    if (cur && textWidth(trial, style, track) > maxW) { lines.push(cur); cur = word; }
-    else cur = trial;
-  }
-  if (cur) lines.push(cur);
-  return lines;
+  for (const ch of s) w += glyphOf(style, ch)[6];
+  return s.length > 1 ? w + tracking * (s.length - 1) : w;
 }
 
-/* ---------------- scene buffer (2x) ---------------- */
-const scene = new Uint8Array(SW * SW * 3);
-let clipX = 0, clipY = 0, clipW = SW, clipH = SW;
-function setClip(x, y, w, h) { clipX = x * SS; clipY = y * SS; clipW = w * SS; clipH = h * SS; }
-function fullClip() { clipX = 0; clipY = 0; clipW = SW; clipH = SW; }
-function sset(px, py, c) {
-  if (px < clipX || py < clipY || px >= clipX + clipW || py >= clipY + clipH || px < 0 || py < 0 || px >= SW || py >= SW) return;
-  const i = (py * SW + px) * 3;
-  scene[i] = c[0]; scene[i + 1] = c[1]; scene[i + 2] = c[2];
-}
-export function shade(c, f) {
-  return [Math.min(255, Math.round(c[0] * f)), Math.min(255, Math.round(c[1] * f)), Math.min(255, Math.round(c[2] * f))];
-}
-export function mix(a, b, t) {
-  return [Math.round(a[0] + (b[0] - a[0]) * t), Math.round(a[1] + (b[1] - a[1]) * t), Math.round(a[2] + (b[2] - a[2]) * t)];
-}
-export function sRect(x, y, w, h, c) {
-  const x0 = Math.round(x * SS), y0 = Math.round(y * SS), x1 = Math.round((x + w) * SS), y1 = Math.round((y + h) * SS);
-  for (let py = y0; py < y1; py++) for (let px = x0; px < x1; px++) sset(px, py, c);
-}
-export function sGradV(x, y, w, h, cTop, cBot) {
-  const y0 = Math.round(y * SS), y1 = Math.round((y + h) * SS);
-  for (let py = y0; py < y1; py++) {
-    const t = (py - y0) / Math.max(1, y1 - y0);
-    sRect(x, py / SS, w, 1 / SS + 0.01, mix(cTop, cBot, t));
-  }
-}
-export function sPoly(pts, c) {
-  const P = pts.map(p => [p[0] * SS, p[1] * SS]);
-  let minY = 1e9, maxY = -1e9;
-  for (const p of P) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
-  const y0 = Math.max(0, Math.floor(minY)), y1 = Math.min(SW - 1, Math.ceil(maxY));
-  for (let py = y0; py <= y1; py++) {
-    const yc = py + 0.5, xs = [];
-    for (let i = 0; i < P.length; i++) {
-      const a = P[i], b = P[(i + 1) % P.length];
-      if ((a[1] <= yc && b[1] > yc) || (b[1] <= yc && a[1] > yc)) xs.push(a[0] + (yc - a[1]) / (b[1] - a[1]) * (b[0] - a[0]));
-    }
-    xs.sort((m, n) => m - n);
-    for (let k = 0; k + 1 < xs.length; k += 2) {
-      const xa = Math.round(xs[k]), xb = Math.round(xs[k + 1]);
-      for (let px = xa; px <= xb; px++) sset(px, py, c);
-    }
-  }
-}
-export function sDisc(cx, cy, r, c) { sEllipse(cx, cy, r, r, c); }
-export function sEllipse(cx, cy, rx, ry, c) {
-  const x0 = Math.floor((cx - rx) * SS), x1 = Math.ceil((cx + rx) * SS);
-  const y0 = Math.floor((cy - ry) * SS), y1 = Math.ceil((cy + ry) * SS);
-  for (let py = y0; py <= y1; py++) for (let px = x0; px <= x1; px++) {
-    const dx = (px + 0.5) / SS - cx, dy = (py + 0.5) / SS - cy;
-    if ((dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1) sset(px, py, c);
-  }
-}
-export function sLine(x1, y1, x2, y2, wdt, c) {
-  const minx = Math.min(x1, x2) - wdt, maxx = Math.max(x1, x2) + wdt;
-  const miny = Math.min(y1, y2) - wdt, maxy = Math.max(y1, y2) + wdt;
-  const dx = x2 - x1, dy = y2 - y1, L2 = dx * dx + dy * dy || 1;
-  for (let py = Math.floor(miny * SS); py <= Math.ceil(maxy * SS); py++) for (let px = Math.floor(minx * SS); px <= Math.ceil(maxx * SS); px++) {
-    const X = (px + 0.5) / SS, Y = (py + 0.5) / SS;
-    let t = ((X - x1) * dx + (Y - y1) * dy) / L2; t = Math.max(0, Math.min(1, t));
-    const ex = x1 + t * dx - X, ey = y1 + t * dy - Y;
-    if (ex * ex + ey * ey <= (wdt / 2) * (wdt / 2)) sset(px, py, c);
-  }
-}
-export function sRing(cx, cy, r, wdt, c) {
-  const x0 = Math.floor((cx - r - wdt) * SS), x1 = Math.ceil((cx + r + wdt) * SS);
-  const y0 = Math.floor((cy - r - wdt) * SS), y1 = Math.ceil((cy + r + wdt) * SS);
-  for (let py = y0; py <= y1; py++) for (let px = x0; px <= x1; px++) {
-    const dx = (px + 0.5) / SS - cx, dy = (py + 0.5) / SS - cy;
-    const d = Math.sqrt(dx * dx + dy * dy);
-    if (Math.abs(d - r) <= wdt / 2) sset(px, py, c);
-  }
-}
-
-/* ---------------- frame (1x) + text blitting ---------------- */
-const frame = new Uint8Array(PAGE * PAGE * 3);
-function downsample() {
-  for (let y = 0; y < PAGE; y++) for (let x = 0; x < PAGE; x++) {
-    let r = 0, g = 0, b = 0;
-    for (let oy = 0; oy < SS; oy++) for (let ox = 0; ox < SS; ox++) {
-      const i = ((y * SS + oy) * SW + x * SS + ox) * 3;
-      r += scene[i]; g += scene[i + 1]; b += scene[i + 2];
-    }
-    const j = (y * PAGE + x) * 3, n = SS * SS;
-    frame[j] = r / n; frame[j + 1] = g / n; frame[j + 2] = b / n;
-  }
-}
-export function drawText(text, x, baseline, style, color, track = 0) {
+// Draws one line with the pen starting at x on the given baseline; returns
+// the pen x at the end of the line.
+function drawLine(
+  style: string,
+  s: string,
+  x: number,
+  baseline: number,
+  c: RGB,
+  tracking = 0,
+): number {
   let pen = x;
-  for (const ch of text) {
-    const g = glyph(style, ch);
-    if (!g) continue;
-    if (g.w > 0) {
-      const dx0 = Math.round(pen + g.dx), dy0 = Math.round(baseline + g.dy);
-      for (let gy = 0; gy < g.h; gy++) {
-        const fy = dy0 + gy; if (fy < 0 || fy >= PAGE) continue;
-        for (let gx = 0; gx < g.w; gx++) {
-          const fx = dx0 + gx; if (fx < 0 || fx >= PAGE) continue;
-          const a = ALPHA[(g.y + gy) * AW + g.x + gx];
-          if (!a) continue;
-          const j = (fy * PAGE + fx) * 3, ia = 255 - a;
-          frame[j] = (color[0] * a + frame[j] * ia) / 255;
-          frame[j + 1] = (color[1] * a + frame[j + 1] * ia) / 255;
-          frame[j + 2] = (color[2] * a + frame[j + 2] * ia) / 255;
+  for (const ch of s) {
+    const g = glyphOf(style, ch);
+    const [gx, gy, gw, gh, dx, dy, adv] = g;
+    if (gw > 0 && gh > 0) {
+      const left = Math.round(pen) + dx;
+      const top = baseline + dy;
+      for (let row = 0; row < gh; row++) {
+        const src = (gy + row) * ATLAS_W + gx;
+        for (let col = 0; col < gw; col++) {
+          const a = atlasBits[src + col];
+          if (a > 0) blendPixel(left + col, top + row, c, a);
         }
       }
     }
-    pen += g.adv + track;
+    pen += adv + tracking;
   }
-  return pen - x;
-}
-export function drawTextC(text, cx, baseline, style, color, track = 0) {
-  return drawText(text, cx - textWidth(text, style, track) / 2, baseline, style, color, track);
-}
-export function drawTextR(text, xr, baseline, style, color, track = 0) {
-  return drawText(text, xr - textWidth(text, style, track), baseline, style, color, track);
+  return pen;
 }
 
-/* ---------------- PNG encode ---------------- */
-const CRC_T = [];
-for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; CRC_T[n] = c >>> 0; }
-function crc32(buf) { let c = 0xFFFFFFFF; for (const b of buf) c = CRC_T[(c ^ b) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
-function chunk(type, data) {
-  const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
-  const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
-  const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(td));
-  return Buffer.concat([len, td, crc]);
+function drawLineRight(
+  style: string,
+  s: string,
+  right: number,
+  baseline: number,
+  c: RGB,
+  tracking = 0,
+): void {
+  drawLine(style, s, right - textWidth(style, s, tracking), baseline, c, tracking);
 }
-function encodePNG() {
-  const raw = Buffer.alloc(PAGE * (PAGE * 3 + 1));
-  for (let y = 0; y < PAGE; y++) {
-    raw[y * (PAGE * 3 + 1)] = 0;
-    Buffer.from(frame.buffer, y * PAGE * 3, PAGE * 3).copy(raw, y * (PAGE * 3 + 1) + 1);
+
+// One line drawn with its glyphs compressed horizontally by `squash`
+// (bitmap columns resampled); used where a line must fit a fixed measure.
+function drawLineSquash(
+  style: string,
+  s: string,
+  x: number,
+  baseline: number,
+  c: RGB,
+  squash: number,
+): number {
+  let pen = x;
+  for (const ch of s) {
+    const g = glyphOf(style, ch);
+    const [gx, gy, gw, gh, dx, dy, adv] = g;
+    if (gw > 0 && gh > 0) {
+      const left = Math.round(pen + dx * squash);
+      const top = baseline + dy;
+      const destW = Math.max(1, Math.round(gw * squash));
+      for (let col = 0; col < destW; col++) {
+        const srcCol = Math.min(gw - 1, Math.floor(col / squash));
+        for (let row = 0; row < gh; row++) {
+          const a = atlasBits[(gy + row) * ATLAS_W + gx + srcCol];
+          if (a > 0) blendPixel(left + col, top + row, c, a);
+        }
+      }
+    }
+    pen += adv * squash;
+  }
+  return pen;
+}
+
+function drawLineCentered(
+  style: string,
+  s: string,
+  cx: number,
+  baseline: number,
+  c: RGB,
+  tracking = 0,
+): void {
+  drawLine(style, s, cx - textWidth(style, s, tracking) / 2, baseline, c, tracking);
+}
+
+// Greedy word wrap on atlas advances.
+function wrap(style: string, s: string, maxW: number): string[] {
+  const words = s.split(" ");
+  const lines: string[] = [];
+  let cur = "";
+  for (const word of words) {
+    const trial = cur === "" ? word : cur + " " + word;
+    if (cur !== "" && textWidth(style, trial) > maxW) {
+      lines.push(cur);
+      cur = word;
+    } else {
+      cur = trial;
+    }
+  }
+  if (cur !== "") lines.push(cur);
+  return lines;
+}
+
+// --------------------------------------------------------------- scenes ---
+// A scene is painted at SS times its final size, then averaged down in
+// 2x2 blocks (box filter), which is what softens the silhouette edges.
+const SS = 2;
+
+class Scene {
+  w: number;
+  h: number;
+  pix: Uint8Array;
+  constructor(w: number, h: number) {
+    this.w = w;
+    this.h = h;
+    this.pix = new Uint8Array(w * SS * h * SS * 3);
+  }
+  private put(x: number, y: number, c: RGB): void {
+    const W = this.w * SS;
+    if (x < 0 || y < 0 || x >= W || y >= this.h * SS) return;
+    const i = (y * W + x) * 3;
+    this.pix[i] = c[0];
+    this.pix[i + 1] = c[1];
+    this.pix[i + 2] = c[2];
+  }
+  fill(c: RGB): void {
+    for (let i = 0; i < this.pix.length; i += 3) {
+      this.pix[i] = c[0];
+      this.pix[i + 1] = c[1];
+      this.pix[i + 2] = c[2];
+    }
+  }
+  // vertical two-stop gradient, top colour to bottom colour
+  gradient(top: RGB, bottom: RGB): void {
+    const H = this.h * SS;
+    for (let y = 0; y < H; y++) {
+      const t = H <= 1 ? 0 : y / (H - 1);
+      const c: RGB = [
+        Math.round(top[0] + (bottom[0] - top[0]) * t),
+        Math.round(top[1] + (bottom[1] - top[1]) * t),
+        Math.round(top[2] + (bottom[2] - top[2]) * t),
+      ];
+      for (let x = 0; x < this.w * SS; x++) this.put(x, y, c);
+    }
+  }
+  rect(x: number, y: number, w: number, h: number, c: RGB): void {
+    for (let yy = Math.round(y * SS); yy < Math.round((y + h) * SS); yy++)
+      for (let xx = Math.round(x * SS); xx < Math.round((x + w) * SS); xx++)
+        this.put(xx, yy, c);
+  }
+  poly(pts: [number, number][], c: RGB): void {
+    const P = pts.map(([x, y]): [number, number] => [x * SS, y * SS]);
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const [, y] of P) {
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    for (let y = Math.floor(minY); y <= Math.ceil(maxY); y++) {
+      const xs: number[] = [];
+      for (let i = 0; i < P.length; i++) {
+        const [x1, y1] = P[i];
+        const [x2, y2] = P[(i + 1) % P.length];
+        if ((y >= y1 && y < y2) || (y >= y2 && y < y1)) {
+          xs.push(x1 + ((y - y1) / (y2 - y1)) * (x2 - x1));
+        }
+      }
+      xs.sort((a, b) => a - b);
+      for (let i = 0; i + 1 < xs.length; i += 2)
+        for (let x = Math.round(xs[i]); x <= Math.round(xs[i + 1]); x++)
+          this.put(x, y, c);
+    }
+  }
+  circle(cx: number, cy: number, r: number, c: RGB): void {
+    const CX = cx * SS;
+    const CY = cy * SS;
+    const R = r * SS;
+    for (let y = Math.floor(CY - R); y <= CY + R; y++)
+      for (let x = Math.floor(CX - R); x <= CX + R; x++) {
+        const dx = x - CX;
+        const dy = y - CY;
+        if (dx * dx + dy * dy <= R * R) this.put(x, y, c);
+      }
+  }
+  ring(cx: number, cy: number, r: number, width: number, c: RGB): void {
+    const CX = cx * SS;
+    const CY = cy * SS;
+    const R = r * SS;
+    const inner = (r - width) * SS;
+    for (let y = Math.floor(CY - R); y <= CY + R; y++)
+      for (let x = Math.floor(CX - R); x <= CX + R; x++) {
+        const d2 = (x - CX) * (x - CX) + (y - CY) * (y - CY);
+        if (d2 <= R * R && d2 >= inner * inner) this.put(x, y, c);
+      }
+  }
+  line(x1: number, y1: number, x2: number, y2: number, width: number, c: RGB): void {
+    const steps = Math.max(2, Math.ceil(Math.hypot(x2 - x1, y2 - y1) * SS));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      this.circle(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, width / 2, c);
+    }
+  }
+  pasteTo(ox: number, oy: number): void {
+    const W = this.w * SS;
+    for (let y = 0; y < this.h; y++) {
+      for (let x = 0; x < this.w; x++) {
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        for (let dy = 0; dy < SS; dy++) {
+          for (let dx = 0; dx < SS; dx++) {
+            const i = ((y * SS + dy) * W + (x * SS + dx)) * 3;
+            r += this.pix[i];
+            g += this.pix[i + 1];
+            b += this.pix[i + 2];
+          }
+        }
+        const n = SS * SS;
+        paintPixel(ox + x, oy + y, [
+          Math.round(r / n),
+          Math.round(g / n),
+          Math.round(b / n),
+        ]);
+      }
+    }
+  }
+}
+
+// ------------------------------------------------------------------ PNG ---
+const CRC_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c;
+  }
+  return table;
+})();
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(kind: string, data: Buffer): Buffer {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(kind, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body), 0);
+  return Buffer.concat([len, body, crc]);
+}
+
+function encodePNG(): Buffer {
+  const stride = PAGE_W * 3;
+  const raw = Buffer.alloc((stride + 1) * PAGE_H);
+  const prev = new Int16Array(stride);
+  for (let y = 0; y < PAGE_H; y++) {
+    const rowOff = y * (stride + 1);
+    const srcOff = y * stride;
+    // score each filter by total absolute residual, keep the best row
+    let bestFilter = 0;
+    let bestScore = Infinity;
+    let bestRow: Buffer | null = null;
+    for (let f = 0; f <= 4; f++) {
+      const cand = Buffer.alloc(stride);
+      let score = 0;
+      for (let i = 0; i < stride; i++) {
+        const a = i >= 3 ? frame[srcOff + i - 3] : 0;
+        const b = y > 0 ? frame[srcOff - stride + i] : 0;
+        const cc = y > 0 && i >= 3 ? frame[srcOff - stride + i - 3] : 0;
+        let pred = 0;
+        if (f === 1) pred = a;
+        else if (f === 2) pred = b;
+        else if (f === 3) pred = (a + b) >> 1;
+        else if (f === 4) {
+          const p = a + b - cc;
+          const pa = Math.abs(p - a);
+          const pb = Math.abs(p - b);
+          const pc = Math.abs(p - cc);
+          pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : cc;
+        }
+        const v = (frame[srcOff + i] - pred) & 0xff;
+        cand[i] = v;
+        score += v < 128 ? v : 256 - v;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        bestFilter = f;
+        bestRow = cand;
+      }
+    }
+    raw[rowOff] = bestFilter;
+    (bestRow as Buffer).copy(raw, rowOff + 1);
+    void prev;
   }
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(PAGE, 0); ihdr.writeUInt32BE(PAGE, 4);
-  ihdr[8] = 8; ihdr[9] = 2;
+  ihdr.writeUInt32BE(PAGE_W, 0);
+  ihdr.writeUInt32BE(PAGE_H, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type: truecolour RGB
+  const idat = deflateSync(raw, { level: 9 });
   return Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw, { level: 9 })), chunk('IEND', Buffer.alloc(0)),
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", idat),
+    pngChunk("IEND", Buffer.alloc(0)),
   ]);
 }
 
-/* ---------------- silhouette scenes ----------------
-   Flat editorial duotone: every illustrated card's panel DEPICTS its story.
-   Coordinates are page pixels inside the panel (x, y, w, h). */
-function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
-function skyGrad(x, y, w, h, art) { sGradV(x, y, w, h, mix(art, CREAM, 0.52), mix(art, CREAM, 0.16)); }
-function inkOf(art) { return shade(art, 0.38); }
-function midOf(art) { return shade(art, 0.62); }
-function paleOf(art) { return mix(art, CREAM, 0.62); }
+// --------------------------------------------------------------- scenes ---
+// Each painter receives a fresh scene buffer sized to its card window and
+// draws one flat duotone silhouette that pictures the story.
 
-function scSummit(x, y, w, h, art) {
-  skyGrad(x, y, w, h, art);
-  const ink = inkOf(art), mid = midOf(art), gy = y + h * 0.82;
-  sRect(x, gy, w, h - (gy - y), shade(art, 0.55));
-  const bw = w * 0.60, bx = x + (w - bw) / 2, by = gy - h * 0.50;
-  sDisc(x + w / 2, by + 5, bw * 0.15, ink);                        // dome
-  sRect(x + w / 2 - 1.5, by - h * 0.14, 3, h * 0.15, ink);         // spire
-  sPoly([[bx - 6, by + 6], [bx + bw + 6, by + 6], [x + w / 2, by - h * 0.11]], ink); // pediment
-  sRect(bx, by + 6, bw, gy - by - 6, mid);                         // hall body
-  for (let i = 0; i < 6; i++) {                                    // columns
-    const cxp = bx + bw * (0.09 + i * 0.164);
-    sRect(cxp, by + 12, bw * 0.05, gy - by - 14, paleOf(art));
-  }
-  for (let i = 0; i < 8; i++)                                      // window row
-    sRect(bx + bw * (0.08 + i * 0.115), gy - h * 0.10, bw * 0.055, h * 0.05, paleOf(art));
-  const flagCols = [RUST, GOLD, TEAL, MOSS, PLUM, SKY];
-  for (let i = 0; i < 6; i++) {                                    // flag row on the roofline
-    const fx = bx + bw * (0.07 + i * 0.165);
-    sLine(fx, by + 4, fx, by - h * 0.13, 1.3, paleOf(art));
-    sRect(fx, by - h * 0.13, bw * 0.09, h * 0.075, flagCols[i]);
-  }
-  sRect(x, gy - 2, w, 2, mid);
-}
-function scChip(x, y, w, h, art) {
-  sRect(x, y, w, h, shade(art, 0.30));                             // dark board
-  for (let i = 0; i < 5; i++) {                                    // clean circuit traces
-    const ty = y + h * (0.10 + i * 0.18);
-    sLine(x + w * 0.04, ty, x + w * 0.30, ty, 1.2, midOf(art));
-    sDisc(x + w * 0.30, ty, 2, midOf(art));
-  }
-  for (let i = 0; i < 4; i++) {
-    const tx = x + w * (0.72 + i * 0.06);
-    sLine(tx, y + h * 0.08, tx, y + h * 0.28, 1.2, midOf(art));
-    sDisc(tx, y + h * 0.28, 2, midOf(art));
-  }
-  const cw = w * 0.50, ch = h * 0.60, cx = x + (w - cw) / 2, cy = y + h * 0.20;
-  for (let i = 0; i < 7; i++) {                                    // pins on all sides
-    sRect(cx - w * 0.06, cy + ch * (0.08 + i * 0.14), w * 0.06, 2.6, paleOf(art));
-    sRect(cx + cw, cy + ch * (0.08 + i * 0.14), w * 0.06, 2.6, paleOf(art));
-  }
-  for (let i = 0; i < 5; i++) {
-    sRect(cx + cw * (0.12 + i * 0.18), cy - h * 0.055, 2.6, h * 0.055, paleOf(art));
-    sRect(cx + cw * (0.12 + i * 0.18), cy + ch, 2.6, h * 0.055, paleOf(art));
-  }
-  sRect(cx, cy, cw, ch, midOf(art));                               // the chip, lighter than the board
-  sRect(cx + cw * 0.15, cy + ch * 0.15, cw * 0.70, ch * 0.70, inkOf(art)); // die
-  sRect(cx + cw * 0.33, cy + ch * 0.33, cw * 0.34, ch * 0.34, paleOf(art)); // core
-  sLine(x + w * 0.70, y + h * 0.88, x + w * 0.86, y + h * 0.72, 4, CREAM); // rising arrow
-  sPoly([[x + w * 0.86, y + h * 0.72], [x + w * 0.79, y + h * 0.72], [x + w * 0.79, y + h * 0.64], [x + w * 0.86, y + h * 0.56], [x + w * 0.93, y + h * 0.64], [x + w * 0.93, y + h * 0.72]], CREAM);
-}
-function scGavel(x, y, w, h, art) {
-  skyGrad(x, y, w, h, art);
-  const ink = inkOf(art), mid = midOf(art), gy = y + h * 0.80;
-  for (let i = 0; i < 5; i++) {                                    // court columns behind
-    const cxp = x + w * (0.08 + i * 0.20);
-    sRect(cxp, y + h * 0.18, w * 0.055, gy - y - h * 0.18, mid);
-  }
-  sRect(x, gy, w, h - (gy - y), shade(art, 0.55));                 // bench
-  sLine(x + w * 0.28, y + h * 0.66, x + w * 0.60, y + h * 0.38, 7, paleOf(art)); // gavel handle
-  sRect(x + w * 0.55, y + h * 0.28, w * 0.26, h * 0.14, CREAM);     // gavel head
-  sRect(x + w * 0.53, y + h * 0.255, w * 0.30, h * 0.045, paleOf(art));
-  sEllipse(x + w * 0.42, gy - h * 0.02, w * 0.13, h * 0.05, CREAM); // sound block
-  sRect(x + w * 0.31, gy - h * 0.08, w * 0.22, h * 0.06, paleOf(art));
-  for (let i = 0; i < 3; i++)                                      // motion lines
-    sLine(x + w * (0.68 + i * 0.05), y + h * (0.30 + i * 0.05), x + w * (0.76 + i * 0.05), y + h * (0.26 + i * 0.05), 1.6, CREAM);
-}
-function scBank(x, y, w, h, art) {
-  skyGrad(x, y, w, h, art);
-  const ink = inkOf(art), mid = midOf(art), gy = y + h * 0.84;
-  sRect(x, gy, w, h - (gy - y), shade(art, 0.5));
-  const bw = w * 0.72, bx = x + (w - bw) / 2, by = gy - h * 0.56;
-  sPoly([[bx - 5, by + 5], [bx + bw + 5, by + 5], [x + w / 2, by - h * 0.12]], ink); // pediment
-  sDisc(x + w / 2, by - h * 0.02, bw * 0.05, paleOf(art));          // roundel
-  sRect(bx, by + 5, bw, gy - by - 5, mid);                          // facade
-  for (let i = 0; i < 5; i++) {                                     // columns
-    const cxp = bx + bw * (0.10 + i * 0.20);
-    sRect(cxp, by + 10, bw * 0.07, gy - by - 12, paleOf(art));
-  }
-  sRect(bx - w * 0.04, gy - h * 0.06, bw + w * 0.08, h * 0.03, ink); // steps
-  sRect(bx - w * 0.07, gy - h * 0.015, bw + w * 0.14, h * 0.03, ink);
-  sLine(x + w * 0.50, by - h * 0.12, x + w * 0.50, by - h * 0.26, 1.3, ink); // flag pole
-  sRect(x + w * 0.50, by - h * 0.26, w * 0.10, h * 0.075, GOLD);    // flag
-  sDisc(x + w * 0.545, by - h * 0.222, 1.6, NAVY);
-}
-function scFactory(x, y, w, h, art) {
-  skyGrad(x, y, w, h, art);
-  const ink = inkOf(art), mid = midOf(art), gy = y + h * 0.86;
-  sRect(x, gy, w, h - (gy - y), shade(art, 0.5));
-  const bw = w * 0.78, bx = x + w * 0.06, by = gy - h * 0.42;
-  sRect(bx, by, bw, h * 0.42, ink);                                // factory body
-  sPoly([[bx, by], [bx + bw * 0.25, by - h * 0.12], [bx + bw * 0.50, by], [bx + bw * 0.75, by - h * 0.12], [bx + bw, by]], mid); // sawtooth roof
-  for (let i = 0; i < 5; i++)                                       // windows
-    sRect(bx + bw * (0.08 + i * 0.18), by + h * 0.16, bw * 0.09, h * 0.10, paleOf(art));
-  const sx = x + w * 0.84, sy = gy - h * 0.62;                     // chimney
-  sRect(sx, sy, w * 0.07, h * 0.62, mid);
-  sRect(sx - 2, sy - 3, w * 0.07 + 4, 4, ink);
-  const fx = bx + bw * 0.55, fy = by - h * 0.02;                   // flames on the roof
-  sPoly([[fx - 8, fy + 4], [fx - 3, fy - h * 0.14], [fx, fy - h * 0.06], [fx + 4, fy - h * 0.18], [fx + 8, fy + 4]], mix(RUST, GOLD, 0.45));
-  sPoly([[fx - 4, fy + 4], [fx, fy - h * 0.09], [fx + 4, fy + 4]], CREAM);
-  for (let i = 0; i < 4; i++) sEllipse(fx + 6 + i * 4, fy - h * (0.16 + i * 0.06), 5 + i * 2, 4 + i, mid); // smoke
-  for (let i = 0; i < 3; i++) sEllipse(sx + w * 0.035 + i * 3, sy - h * (0.05 + i * 0.05), 4 + i * 1.5, 3 + i, mid);
-}
-function scGaza(x, y, w, h, art) {
-  skyGrad(x, y, w, h, art);
-  const ink = inkOf(art), mid = midOf(art), gy = y + h * 0.86;
-  sDisc(x + w * 0.16, y + h * 0.30, h * 0.13, paleOf(art));         // low sun
-  sRect(x, gy, w, h - (gy - y), shade(art, 0.5));
-  const rnd = rng(55);
-  let bx = x + w * 0.02;
-  while (bx < x + w * 0.97) {                                       // dense skyline
-    const bw = w * (0.05 + rnd() * 0.05), bh = h * (0.28 + rnd() * 0.30);
-    sRect(bx, gy - bh, bw, bh, ink);
-    bx += bw + w * 0.012;
-  }
-  const mx = x + w * 0.60;                                          // minaret
-  sRect(mx, gy - h * 0.66, w * 0.022, h * 0.66, ink);
-  sDisc(mx + w * 0.011, gy - h * 0.68, w * 0.030, ink);
-  sLine(mx + w * 0.011, gy - h * 0.71, mx + w * 0.011, gy - h * 0.80, 1.4, ink);
-  for (const fx of [0.30, 0.78]) {                                  // smoke columns
-    for (let i = 0; i < 5; i++)
-      sEllipse(x + w * (fx + Math.sin(i * 1.7) * 0.012), gy - h * (0.52 + i * 0.085), w * (0.030 + i * 0.008), h * (0.045 + i * 0.008), mid);
-  }
-}
-function scChartUp(x, y, w, h, art) {
-  skyGrad(x, y, w, h, art);
-  const ink = inkOf(art), mid = midOf(art), gy = y + h * 0.86;
-  const rnd = rng(10);
-  let bx = x + w * 0.03;
-  while (bx < x + w * 0.96) {                                       // skyline
-    const bw = w * (0.06 + rnd() * 0.05), bh = h * (0.16 + rnd() * 0.22);
-    sRect(bx, gy - bh, bw, bh, ink);
-    bx += bw + w * 0.014;
-  }
-  sRect(x, gy, w, h - (gy - y), shade(art, 0.5));
-  const pts = [[0.06, 0.62], [0.28, 0.62], [0.28, 0.46], [0.50, 0.46], [0.50, 0.30], [0.72, 0.30], [0.72, 0.16], [0.88, 0.16]];
-  for (let i = 0; i + 1 < pts.length; i++)
-    sLine(x + w * pts[i][0], y + h * pts[i][1], x + w * pts[i + 1][0], y + h * pts[i + 1][1], 3, CREAM); // rising steps
-  const ex = x + w * 0.88, ey = y + h * 0.16;
-  sPoly([[ex, ey - 5], [ex + w * 0.075, ey + 1], [ex + w * 0.028, ey + 2], [ex + w * 0.035, ey + 7], [ex - w * 0.005, ey + 3]], CREAM); // arrowhead
-}
-function scStage(x, y, w, h, art) {
-  sRect(x, y, w, h, shade(art, 0.35));                              // dark stage
-  sPoly([[x, y], [x + w * 0.30, y], [x + w * 0.14, y + h], [x, y + h]], midOf(art)); // left curtain
-  sPoly([[x + w, y], [x + w * 0.70, y], [x + w * 0.86, y + h], [x + w, y + h]], midOf(art)); // right curtain
-  sPoly([[x + w * 0.30, y], [x + w * 0.70, y], [x + w * 0.56, y + h * 0.55], [x + w * 0.44, y + h * 0.55]], mix(CREAM, art, 0.55)); // spotlight cone
-  const mx = x + w * 0.50, my = y + h * 0.38;                       // microphone, big and central
-  sEllipse(mx, y + h * 0.94, w * 0.20, h * 0.03, paleOf(art));      // light pool on the floor
-  sDisc(mx, my, w * 0.085, CREAM);
-  sDisc(mx, my, w * 0.062, inkOf(art));
-  for (let i = 0; i < 3; i++) sLine(mx - w * 0.082, my - h * 0.03 + i * h * 0.045, mx + w * 0.082, my - h * 0.03 + i * h * 0.045, 1.4, CREAM);
-  sLine(mx, my + w * 0.085, mx, y + h * 0.92, 3, paleOf(art));      // stand
-  sLine(mx, y + h * 0.92, mx - w * 0.09, y + h * 0.99, 2.4, paleOf(art));
-  sLine(mx, y + h * 0.92, mx + w * 0.09, y + h * 0.99, 2.4, paleOf(art));
-  sRect(x, y + h * 0.92, w, h * 0.08, shade(art, 0.55));            // stage floor
-}
-function scStadium(x, y, w, h, art) {
-  skyGrad(x, y, w, h, art);
-  const ink = inkOf(art), mid = midOf(art), gy = y + h * 0.80;
-  for (const fx of [0.16, 0.84]) {                                  // floodlights
-    sLine(x + w * fx, gy - h * 0.30, x + w * fx, y + h * 0.10, 2, ink);
-    sRect(x + w * fx - w * 0.045, y + h * 0.045, w * 0.09, h * 0.07, ink);
-    for (let i = 0; i < 3; i++) sDisc(x + w * fx - w * 0.028 + i * w * 0.028, y + h * 0.08, 1.8, CREAM);
-  }
-  sPoly([[x + w * 0.06, gy], [x + w * 0.12, gy - h * 0.34], [x + w * 0.88, gy - h * 0.34], [x + w * 0.94, gy]], ink); // bowl
-  sRect(x + w * 0.10, gy - h * 0.40, w * 0.80, h * 0.065, mid);     // roof band
-  for (let i = 0; i < 12; i++) sRect(x + w * (0.16 + i * 0.058), gy - h * 0.28, w * 0.03, h * 0.05, paleOf(art)); // crowd lights
-  sRect(x, gy, w, h - (gy - y), shade(art, 0.52));                  // pitch
-  sLine(x + w * 0.08, gy + h * 0.10, x + w * 0.92, gy + h * 0.10, 1.1, paleOf(art));
-  const bx = x + w * 0.76, by = gy + h * 0.085, br = h * 0.105;     // the ball
-  sDisc(bx, by, br, CREAM);
-  sDisc(bx, by, br * 0.34, ink);
-  for (let a = 0; a < 5; a++) sDisc(bx + Math.cos(a * 1.256) * br * 0.68, by + Math.sin(a * 1.256) * br * 0.68, br * 0.20, ink);
-}
-function scHospital(x, y, w, h, art) {
-  skyGrad(x, y, w, h, art);
-  const ink = inkOf(art), mid = midOf(art), gy = y + h * 0.86;
-  sRect(x, gy, w, h - (gy - y), shade(art, 0.5));
-  const bw = w * 0.56, bx = x + w * 0.22, by = gy - h * 0.58;
-  sRect(bx, by, bw, h * 0.58, ink);                                // hospital block
-  sRect(bx + bw * 0.30, by - h * 0.16, bw * 0.40, h * 0.16, mid);   // top wing
-  for (let r = 0; r < 3; r++) for (let cix = 0; cix < 4; cix++)     // lit windows
-    sRect(bx + bw * (0.10 + cix * 0.22), by + h * (0.14 + r * 0.20), bw * 0.11, h * 0.09, paleOf(art));
-  const cxp = bx + bw * 0.50, cyp = by - h * 0.08;                 // cross sign
-  sRect(cxp - w * 0.015, cyp - h * 0.07, w * 0.03, h * 0.14, CREAM);
-  sRect(cxp - w * 0.05, cyp - h * 0.035, w * 0.10, h * 0.07, CREAM);
-  sLine(x + w * 0.08, gy - h * 0.10, x + w * 0.92, gy - h * 0.10, 1.2, paleOf(art)); // ribbon line
-  sPoly([[x + w * 0.08, gy - h * 0.10], [x + w * 0.16, gy - h * 0.16], [x + w * 0.16, gy - h * 0.04]], RUST); // ribbon end
-}
-function scRadar(x, y, w, h, art) {
-  skyGrad(x, y, w, h, art);
-  const ink = inkOf(art), mid = midOf(art), gy = y + h * 0.84;
-  const dx = x + w * 0.28, dy = y + h * 0.52;                       // radar dish
-  sLine(dx, dy, dx, gy, 2.4, ink);
-  sPoly([[dx - w * 0.16, dy - h * 0.10], [dx + w * 0.16, dy - h * 0.10], [dx, dy + h * 0.10]], mid);
-  sLine(dx, dy, dx + w * 0.22, dy - h * 0.22, 1.6, ink);
-  sDisc(dx + w * 0.24, dy - h * 0.24, 2.4, paleOf(art));
-  for (let i = 0; i < 3; i++) sRing(dx, dy - h * 0.02, w * (0.10 + i * 0.06), 1, paleOf(art)); // sweep rings
-  const px = x + w * 0.66, py = y + h * 0.26;                       // the jet, large and cream
-  sPoly([[px - w * 0.20, py], [px + w * 0.03, py - h * 0.07], [px + w * 0.20, py], [px + w * 0.03, py + h * 0.07]], CREAM);
-  sPoly([[px - w * 0.03, py - h * 0.07], [px + w * 0.08, py - h * 0.19], [px + w * 0.10, py - h * 0.05]], paleOf(art));
-  sPoly([[px - w * 0.03, py + h * 0.07], [px + w * 0.08, py + h * 0.19], [px + w * 0.10, py + h * 0.05]], paleOf(art));
-  for (let i = 0; i < 3; i++) sLine(px - w * (0.22 + i * 0.07), py, px - w * (0.29 + i * 0.07), py, 1.6, CREAM); // trail
-  sRect(x, gy, w, h - (gy - y), shade(art, 0.5));
-}
-function scBarrels(x, y, w, h, art) {
-  skyGrad(x, y, w, h, art);
-  const ink = inkOf(art), mid = midOf(art), gy = y + h * 0.86;
-  sRect(x, gy, w, h - (gy - y), shade(art, 0.5));
-  const bw = w * 0.16, bh = h * 0.34;
-  const spots = [[0.10, 0.52], [0.28, 0.52], [0.46, 0.52], [0.19, 0.20], [0.37, 0.20]];
-  for (const [fx, fy] of spots) {                                  // stacked barrels
-    const bx = x + w * fx, by = gy - h * fy;
-    sRect(bx, by, bw, bh, ink);
-    sRect(bx, by + bh * 0.18, bw, 1.6, mid);
-    sRect(bx, by + bh * 0.78, bw, 1.6, mid);
-  }
-  const tx = x + w * 0.78, ty = y + h * 0.30;                      // warning sign
-  sPoly([[tx, ty - h * 0.16], [tx + w * 0.14, ty + h * 0.10], [tx - w * 0.14, ty + h * 0.10]], GOLD);
-  sPoly([[tx, ty - h * 0.11], [tx + w * 0.095, ty + h * 0.065], [tx - w * 0.095, ty + h * 0.065]], INK);
-  sRect(tx - 1.2, ty - h * 0.05, 2.4, h * 0.07, GOLD);
-  sDisc(tx, ty + h * 0.045, 1.8, GOLD);
-  sLine(tx, ty + h * 0.10, tx, gy, 1.8, ink);                      // sign post
-}
-function scAndes(x, y, w, h, art) {
-  skyGrad(x, y, w, h, art);
-  const ink = inkOf(art), mid = midOf(art), gy = y + h * 0.88;
-  sPoly([[x, gy], [x, y + h * 0.30], [x + w * 0.16, y + h * 0.16], [x + w * 0.30, y + h * 0.38], [x + w * 0.44, y + h * 0.10], [x + w * 0.58, y + h * 0.34], [x + w * 0.70, y + h * 0.22], [x + w * 0.84, y + h * 0.40], [x + w, y + h * 0.28], [x + w, gy]], mid); // back ridge
-  sPoly([[x, gy], [x, y + h * 0.52], [x + w * 0.20, y + h * 0.30], [x + w * 0.38, y + h * 0.55], [x + w * 0.55, y + h * 0.26], [x + w * 0.74, y + h * 0.52], [x + w * 0.88, y + h * 0.38], [x + w, y + h * 0.55], [x + w, gy]], ink); // front ridge
-  for (const [px, py] of [[0.20, 0.30], [0.55, 0.26], [0.88, 0.38]]) // snow caps
-    sPoly([[x + w * (px - 0.045), py * h + y + h * 0.055], [x + w * px, py * h + y], [x + w * (px + 0.045), py * h + y + h * 0.055], [x + w * (px + 0.014), py * h + y + h * 0.038], [x + w * px, py * h + y + h * 0.062], [x + w * (px - 0.014), py * h + y + h * 0.038]], CREAM);
-  sLine(x + w * 0.55, y + h * 0.30, x + w * 0.585, y + h * 0.44, 1.6, shade(art, 0.30)); // crack
-  sLine(x + w * 0.585, y + h * 0.44, x + w * 0.555, y + h * 0.58, 1.6, shade(art, 0.30));
-  sLine(x + w * 0.585, y + h * 0.44, x + w * 0.625, y + h * 0.55, 1.3, shade(art, 0.30));
-  sRing(x + w * 0.30, gy - h * 0.015, w * 0.045, 1.5, CREAM);      // epicentre rings
-  sRing(x + w * 0.30, gy - h * 0.015, w * 0.085, 1.2, paleOf(art));
-  for (const hx of [0.66, 0.76]) {                                 // houses at the base
-    sRect(x + w * hx, gy - h * 0.085, w * 0.07, h * 0.085, ink);
-    sPoly([[x + w * (hx - 0.008), gy - h * 0.085], [x + w * (hx + 0.078), gy - h * 0.085], [x + w * (hx + 0.035), gy - h * 0.135]], ink);
-  }
-}
-const SCENES = {
-  summit: scSummit, chip: scChip, gavel: scGavel, bank: scBank, factory: scFactory,
-  gaza: scGaza, chartup: scChartUp, stage: scStage, stadium: scStadium,
-  hospital: scHospital, radar: scRadar, barrels: scBarrels, andes: scAndes,
-};
-function paintScene(kind, x, y, w, h, art) {
-  setClip(x, y, w, h);
-  (SCENES[kind] || scSummit)(x, y, w, h, art);
-  fullClip();
-}
+type Painter = (sc: Scene) => void;
 
-/* ---------------- page layout ---------------- */
-const M = 14, RX = 1010;
-const STRIPBG = [239, 233, 216];
-const BODYTX = [52, 47, 39];
-
-function border(x, y, w, h, c) {
-  sRect(x, y, w, 1, c); sRect(x, y + h - 1, w, 1, c); sRect(x, y, 1, h, c); sRect(x + w - 1, y, 1, h, c);
-}
-function numBadge(n, cx, cy, color) {
-  sDisc(cx, cy, 9.5, color);
-  sRing(cx, cy, 9.5, 1, CREAM);
-}
-function numBadgeText(n, cx, cy) { drawTextC(String(n), cx, cy + 3.4, 'sansB9', [255, 255, 255]); }
-
-const leadGeom = { y: 186, h: 258, w: 324, sceneH: 128 };
-const gridGeom = { y1: 452, y2: 612, h: 154, w: 191, sceneH: 50 };
-
-function paintFurniture() {
-  sRect(0, 0, PAGE, PAGE, PAPER);
-  sRect(M, 10, RX - M, 1, INK);
-  sRect(M, 90, RX - M, 3, INK); sRect(M, 96, RX - M, 1, INK);
-  sRect(M, 116, 300, 1, HAIR); sRect(724, 116, RX - 724, 1, HAIR);
-  // UTC strip
-  sRect(M, 134, RX - M, 42, STRIPBG);
-  sRect(M, 134, RX - M, 1, HAIR); sRect(M, 175, RX - M, 1, HAIR);
-  // lead cards
-  LEADS.forEach((s, i) => {
-    const x = M + i * (leadGeom.w + 12), y = leadGeom.y;
-    sRect(x, y, leadGeom.w, leadGeom.h, CARD); border(x, y, leadGeom.w, leadGeom.h, HAIR);
-    paintScene(s.scene, x + 2, y + 2, leadGeom.w - 4, leadGeom.sceneH, s.art);
-    numBadge(s.n, x + 16, y + 16, TAGC[s.tag]);
-    const label = s.tag + ' • ' + s.src;
-    sRect(x + 10, y + leadGeom.sceneH + 9, textWidth(label, 'sansB10') + 12, 15, TAGC[s.tag]);
-  });
-  // grid cards
-  CARDS.forEach((s, i) => {
-    const row = i < 5 ? 0 : 1, col = i % 5;
-    const x = M + col * (gridGeom.w + 10.25), y = row ? gridGeom.y2 : gridGeom.y1;
-    sRect(x, y, gridGeom.w, gridGeom.h, CARD); border(x, y, gridGeom.w, gridGeom.h, HAIR);
-    paintScene(s.scene, x + 2, y + 2, gridGeom.w - 4, gridGeom.sceneH, s.art);
-    numBadge(s.n, x + 13, y + 13, TAGC[s.tag]);
-    const label = s.tag + ' • ' + s.src;
-    sRect(x + 7, y + gridGeom.sceneH + 6, textWidth(label, 'sansB9') + 10, 13, TAGC[s.tag]);
-  });
-  // rest band
-  sRect(M, 770, RX - M, 1, HAIR);
-  REST.forEach((r, i) => {
-    const col = i < 11 ? 0 : 1, row = i % 11;
-    const x = col ? 519 : M, base = 800 + row * 11;
-    sDisc(x + 6, base - 3.2, 6.5, REGC[r[1]]);
-  });
-  // bottom band: map + region bar
-  sRect(M, 914, RX - M, 1, HAIR);
-  const mapX = M, mapY = 922, mapW = 296, mapH = 54;
-  sRect(mapX, mapY, mapW, mapH, mix(PAPER, SKY, 0.16)); border(mapX, mapY, mapW, mapH, HAIR);
-  for (let gx = 2; gx < mapW - 1; gx += 3.6) for (let gy = 2; gy < mapH - 1; gy += 3.6) {
-    const lon = (gx / mapW) * 360 - 180, lat = 84 - (gy / mapH) * 146;
-    let inside = false;
-    for (const poly of LAND) {
-      let c = false;
-      for (let a = 0, b = poly.length - 1; a < poly.length; b = a++) {
-        const [xa, ya] = poly[a], [xb, yb] = poly[b];
-        if ((ya > lat) !== (yb > lat) && lon < (xb - xa) * (lat - ya) / (yb - ya) + xa) c = !c;
-      }
-      if (c) { inside = true; break; }
+const SCENES: Record<string, Painter> = {
+  // Nvidia: a microchip with pins and a pale display, gavel at the foot.
+  chip(sc) {
+    sc.fill([9, 17, 28]);
+    const pin: RGB = [198, 188, 164];
+    sc.rect(100, 35, 130, 60, [14, 25, 42]);
+    sc.rect(95, 30, 130, 60, [19, 34, 57]);
+    sc.rect(120, 45, 60, 28, [170, 172, 168]);
+    for (const px of [105, 130, 155, 180, 205]) {
+      sc.rect(px, 20, 6, 10, pin);
+      sc.rect(px, 90, 6, 10, pin);
     }
-    if (inside) sDisc(mapX + gx, mapY + gy, 1.3, mix(INK, PAPER, 0.18));
+    for (const py of [40, 55, 70]) {
+      sc.rect(85, py, 10, 6, pin);
+      sc.rect(225, py, 10, 6, pin);
+    }
+    sc.line(285, 0, 285, 24, 2, [70, 90, 115]);
+    sc.line(300, 0, 300, 24, 2, [70, 90, 115]);
+    sc.circle(285, 27, 3, [70, 90, 115]);
+    sc.circle(300, 27, 3, [70, 90, 115]);
+    sc.poly(
+      [
+        [230, 116],
+        [272, 86],
+        [296, 88],
+        [294, 102],
+        [258, 120],
+        [236, 122],
+      ],
+      [170, 172, 168],
+    );
+    sc.poly(
+      [
+        [214, 118],
+        [234, 112],
+        [238, 118],
+        [218, 124],
+      ],
+      [170, 172, 168],
+    );
+    sc.rect(0, 114, 320, 14, [11, 21, 35]);
+  },
+
+  // Puigdemont: a courthouse with dome, columns and six small flags.
+  courthouse(sc) {
+    sc.gradient([146, 180, 160], [110, 150, 128]);
+    const stone: RGB = [11, 60, 52];
+    const pale: RGB = [214, 220, 218];
+    sc.rect(60, 62, 200, 56, stone);
+    sc.poly(
+      [
+        [48, 62],
+        [160, 30],
+        [272, 62],
+      ],
+      stone,
+    );
+    sc.circle(160, 34, 16, stone);
+    sc.rect(150, 16, 20, 18, stone);
+    sc.rect(52, 58, 216, 8, stone);
+    for (const cx of [76, 112, 148, 184, 220]) sc.rect(cx, 70, 12, 42, pale);
+    sc.rect(150, 88, 20, 30, [6, 40, 34]);
+    const flagCols: RGB[] = [
+      [166, 44, 30],
+      [176, 118, 20],
+      [18, 96, 84],
+      [24, 96, 56],
+      [110, 58, 130],
+      [38, 106, 150],
+    ];
+    flagCols.forEach((c, i) => {
+      const fx = 84 + i * 30;
+      sc.rect(fx, 26, 2, 12, stone);
+      sc.rect(fx + 2, 26, 15, 9, c);
+    });
+    sc.rect(0, 118, 320, 10, [10, 53, 46]);
+  },
+
+  // Grok suits: courthouse pillars under a purple sky, scales of justice.
+  scales(sc) {
+    sc.gradient([178, 146, 171], [74, 40, 88]);
+    const pillar: RGB = [61, 32, 72];
+    const tops: [number, number][] = [
+      [30, 30],
+      [78, 18],
+      [126, 38],
+      [174, 24],
+      [222, 44],
+      [270, 30],
+    ];
+    for (const [px, py] of tops) sc.rect(px, py, 22, 128 - py, pillar);
+    sc.line(222, 84, 298, 40, 5, CREAM);
+    sc.line(222, 84, 208, 94, 3, CREAM);
+    sc.line(222, 84, 252, 94, 3, CREAM);
+    sc.poly(
+      [
+        [206, 94],
+        [256, 94],
+        [231, 102],
+      ],
+      CREAM,
+    );
+    sc.line(298, 40, 276, 48, 3, CREAM);
+    sc.line(298, 40, 312, 48, 3, CREAM);
+    sc.poly(
+      [
+        [274, 48],
+        [314, 48],
+        [294, 55],
+      ],
+      CREAM,
+    );
+  },
+
+  // Sanctions: a bank front with pediment, coin and a small flag.
+  bank(sc) {
+    sc.gradient([122, 132, 148], [84, 94, 112]);
+    const dark: RGB = [11, 21, 35];
+    sc.rect(18, 16, 151, 37, dark);
+    sc.poly(
+      [
+        [8, 16],
+        [93, 4],
+        [178, 16],
+      ],
+      dark,
+    );
+    sc.circle(93, 11, 7, [198, 188, 164]);
+    sc.rect(118, 1, 2, 10, dark);
+    sc.rect(120, 1, 13, 8, [38, 106, 150]);
+    sc.circle(126, 5, 2, [176, 118, 20]);
+    for (const wx of [34, 82, 130]) sc.rect(wx, 26, 10, 14, [190, 196, 200]);
+  },
+
+  // Factory fire: roofline and chimney, cream flames against salmon sky.
+  factory(sc) {
+    sc.gradient([214, 140, 116], [188, 96, 78]);
+    const dark: RGB = [110, 44, 36];
+    sc.rect(8, 30, 142, 23, dark);
+    sc.poly(
+      [
+        [8, 30],
+        [60, 16],
+        [150, 30],
+      ],
+      dark,
+    );
+    sc.rect(128, 8, 12, 22, dark);
+    sc.circle(140, 8, 6, [150, 130, 120]);
+    sc.circle(154, 5, 4, [150, 130, 120]);
+    sc.poly(
+      [
+        [44, 34],
+        [52, 22],
+        [60, 34],
+      ],
+      [240, 170, 60],
+    );
+    sc.poly(
+      [
+        [30, 36],
+        [38, 26],
+        [46, 36],
+      ],
+      CREAM,
+    );
+    sc.poly(
+      [
+        [62, 36],
+        [70, 27],
+        [78, 36],
+      ],
+      CREAM,
+    );
+  },
+
+  // Gaza: a dark damaged skyline under a pale green sky.
+  gaza(sc) {
+    sc.gradient([150, 172, 132], [126, 148, 110]);
+    const dark: RGB = [20, 40, 20];
+    const bars: [number, number][] = [
+      [0, 20],
+      [16, 30],
+      [28, 24],
+      [46, 36],
+      [60, 26],
+      [80, 32],
+      [92, 22],
+      [108, 34],
+      [126, 25],
+      [138, 30],
+      [154, 21],
+      [168, 28],
+    ];
+    for (const [bx, bh] of bars) sc.rect(bx, 53 - bh, 13, bh, dark);
+    sc.circle(60, 20, 5, dark);
+    sc.rect(0, 50, 187, 3, [14, 32, 14]);
+  },
+
+  // Zscaler deal: skyline with a bold rising arrow.
+  "skyline-arrow"(sc) {
+    sc.gradient([120, 164, 142], [96, 140, 120]);
+    const dark: RGB = [10, 53, 46];
+    const bars: [number, number][] = [
+      [0, 26],
+      [18, 36],
+      [36, 22],
+      [54, 32],
+      [126, 28],
+      [144, 38],
+      [162, 24],
+    ];
+    for (const [bx, bh] of bars) sc.rect(bx, 53 - bh, 16, bh, dark);
+    sc.line(92, 36, 124, 36, 6, CREAM);
+    sc.line(124, 36, 124, 20, 6, CREAM);
+    sc.line(124, 20, 150, 20, 6, CREAM);
+    sc.poly(
+      [
+        [150, 12],
+        [166, 20],
+        [150, 28],
+      ],
+      CREAM,
+    );
+  },
+
+  // Ahmadi: mountain ridges, a moon and a ring light on its stand.
+  stage(sc) {
+    sc.fill([61, 32, 72]);
+    sc.poly(
+      [
+        [0, 53],
+        [50, 14],
+        [100, 53],
+      ],
+      [110, 58, 130],
+    );
+    sc.poly(
+      [
+        [60, 53],
+        [115, 8],
+        [170, 53],
+      ],
+      [110, 58, 130],
+    );
+    sc.poly(
+      [
+        [130, 53],
+        [165, 20],
+        [187, 53],
+      ],
+      [110, 58, 130],
+    );
+    sc.circle(158, 12, 7, CREAM);
+    sc.ring(118, 22, 16, 3, CREAM);
+    sc.line(118, 38, 118, 53, 3, CREAM);
+    sc.rect(0, 46, 187, 7, [43, 22, 54]);
+  },
+
+  // Brentford: floodlit stadium, pale pitch band, dashed line, ball.
+  stadium(sc) {
+    sc.fill([16, 36, 16]);
+    sc.rect(0, 10, 187, 20, [24, 52, 24]);
+    for (const lx of [30, 70, 120, 160]) {
+      sc.rect(lx, 4, 2, 8, [120, 140, 120]);
+      sc.circle(lx + 1, 4, 3, CREAM);
+    }
+    sc.rect(0, 32, 187, 8, [140, 160, 110]);
+    sc.rect(0, 42, 187, 11, [46, 96, 44]);
+    for (let dx = 8; dx < 180; dx += 16) sc.rect(dx, 46, 8, 2, CREAM);
+    sc.circle(160, 47, 6, CREAM);
+    sc.circle(158, 45, 1, [16, 36, 16]);
+    sc.circle(163, 49, 1, [16, 36, 16]);
+  },
+
+  // Screening trial: a hospital block with lit windows and a roof cross.
+  hospital(sc) {
+    sc.fill([14, 40, 57]);
+    sc.rect(55, 12, 80, 41, [19, 53, 75]);
+    sc.rect(92, 1, 6, 13, CREAM);
+    sc.rect(86, 4, 18, 6, CREAM);
+    for (const wy of [20, 31, 42])
+      for (const wx of [64, 88, 112]) sc.rect(wx, wy, 9, 6, [173, 192, 190]);
+  },
+
+  // AWACS: a cream patrol plane over a grey horizon.
+  awacs(sc) {
+    sc.gradient([168, 172, 170], [90, 96, 104]);
+    sc.rect(0, 46, 187, 7, [40, 44, 48]);
+    sc.poly(
+      [
+        [52, 18],
+        [140, 20],
+        [52, 24],
+      ],
+      CREAM,
+    );
+    sc.circle(98, 13, 7, CREAM);
+    sc.poly(
+      [
+        [52, 18],
+        [42, 7],
+        [60, 15],
+      ],
+      CREAM,
+    );
+    sc.poly(
+      [
+        [88, 24],
+        [118, 24],
+        [104, 33],
+      ],
+      CREAM,
+    );
+  },
+
+  // Iowa blast: three explosive barrels and a parasol on ochre ground.
+  barrels(sc) {
+    sc.gradient([206, 170, 96], [186, 140, 70]);
+    sc.rect(0, 40, 187, 13, [120, 84, 30]);
+    const dark: RGB = [67, 45, 8];
+    for (const bx of [30, 52, 74]) {
+      sc.rect(bx, 24, 16, 22, dark);
+      sc.rect(bx, 28, 16, 2, [120, 84, 30]);
+      sc.rect(bx, 38, 16, 2, [120, 84, 30]);
+    }
+    sc.poly(
+      [
+        [118, 14],
+        [170, 14],
+        [144, 30],
+      ],
+      dark,
+    );
+    sc.rect(142, 30, 4, 18, dark);
+  },
+
+  // Vanuatu quake: layered ranges, a snow cap, cream epicentre rings.
+  quake(sc) {
+    sc.fill([216, 186, 128]);
+    sc.poly(
+      [
+        [0, 53],
+        [45, 22],
+        [95, 53],
+      ],
+      [150, 110, 60],
+    );
+    sc.poly(
+      [
+        [80, 53],
+        [130, 16],
+        [187, 53],
+      ],
+      [150, 110, 60],
+    );
+    sc.poly(
+      [
+        [0, 53],
+        [60, 28],
+        [120, 53],
+      ],
+      [67, 45, 8],
+    );
+    sc.poly(
+      [
+        [100, 53],
+        [150, 32],
+        [187, 53],
+      ],
+      [67, 45, 8],
+    );
+    sc.poly(
+      [
+        [124, 22],
+        [130, 16],
+        [136, 22],
+        [133, 20],
+        [130, 23],
+        [127, 20],
+      ],
+      CREAM,
+    );
+    sc.ring(160, 42, 6, 2, CREAM);
+    sc.ring(160, 42, 11, 2, CREAM);
+  },
+};
+
+// ---------------------------------------------------------------- cards ---
+function drawCard(
+  card: StoryCard,
+  number: number,
+  x: number,
+  y: number,
+  w: number,
+  lead: boolean,
+  sceneH = 53,
+): void {
+  const sh = lead ? 128 : sceneH;
+  fillRect(x, y, w, lead ? 257 : 153, CARD_BG);
+  strokeRect(x, y, w, lead ? 257 : 153, FRAME_LINE);
+  const sx = x + 2;
+  const sy = y + 2;
+  const sw = w - 4;
+  const sc = new Scene(sw, sh);
+  SCENES[card.scene](sc);
+  sc.pasteTo(sx, sy);
+  const sceneBottom = sy + sh;
+
+  // green story-number badge in the scene's top-left corner
+  fillCircle(sx + 13, sy + 13, 11, TAG_GREEN);
+  const label = String(number);
+  drawLineCentered("sansB11", label, sx + 13, sy + 17, CREAM);
+
+  if (card.caption !== "") {
+    drawLine("sansB10", card.caption, sx + 10, sy + 62, CREAM, 1);
   }
-  const lon2x = lon => mapX + (lon + 180) / 360 * mapW;
-  const lat2y = lat => mapY + (84 - lat) / 146 * mapH;
-  for (const [n, lon, lat] of PINS) sDisc(lon2x(lon), lat2y(lat), 6.5, REGC[REGION_OF[n]]);
-  let bx = mapX; const total = 35;
-  for (const [name, count] of REGION_COUNTS) {
-    const wdt = mapW * count / total;
-    sRect(bx, 980, wdt - 1, 7, REGC[name]);
-    bx += wdt;
+  // the big fact, cream with a hard dark offset shadow; on the small cards
+  // the fact is compressed horizontally so long facts stay inside the scene
+  if (lead) {
+    const factBase = sceneBottom - 11;
+    drawLine("sansB42", card.fact, sx + 12, factBase + 3, [10, 10, 12]);
+    drawLine("sansB42", card.fact, sx + 10, factBase, CREAM);
+  } else {
+    const factBase = sceneBottom - 8;
+    drawLineSquash("sansB42", card.fact, sx + 4, factBase + 2, [10, 10, 12], 0.6);
+    drawLineSquash("sansB42", card.fact, sx + 2, factBase, CREAM, 0.6);
   }
+
+  // certainty + source chip, region label to its right
+  const tagY = y + (lead ? 137 : 58);
+  const tagW = textWidth("sansB10", card.tag) + 12;
+  fillRect(x + 10, tagY, tagW, 13, TAG_GREEN);
+  drawLine("sansB10", card.tag, x + 16, tagY + 10, WHITE);
+  if (card.region !== "") {
+    drawLineRight("sansB10", card.region, x + w - 10, tagY + 10, FAINT, 2);
+  }
+
+  const headStyle = lead ? "serif19" : "serif14";
+  const headLines = wrap(headStyle, card.headline, w - 20);
+  const headFirst = y + (lead ? 170 : 89);
+  const headPitch = lead ? 23 : 20;
+  headLines.forEach((ln, i) => {
+    drawLine(headStyle, ln, x + 10, headFirst + i * headPitch, INK);
+  });
+
+  const briefStyle = lead ? "sans11" : "sans11";
+  const briefLines = wrap(briefStyle, card.brief, w - 16);
+  const briefFirst = y + (lead ? 219 : 128);
+  const briefPitch = lead ? 16 : 12;
+  const briefInk = lead ? LEAD_BRIEF_INK : CARD_BRIEF_INK;
+  briefLines.forEach((ln, i) => {
+    drawLine(briefStyle, ln, x + 10, briefFirst + i * briefPitch, briefInk);
+  });
 }
 
-function paintText() {
-  drawText('ONE DAY • ONE PAGE • 35 STORIES • 7 REGIONS', M + 2, 24, 'sansB10', FAINT, 1.5);
-  drawTextR('MONDAY EDITION', RX - 2, 24, 'sansB10', FAINT, 1.5);
-  drawTextC('THE WORLD IN ONE DAY', PAGE / 2, 80, 'serif54', INK, 0.5);
-  drawTextC('MONDAY 23 NOVEMBER 2026', PAGE / 2, 124, 'serif23', INK, 1);
-  drawText('THE DAY', M + 2, 152, 'sansB10', INK);
-  drawText('IN UTC', M + 2, 168, 'sansB10', INK);
-  STRIP.forEach((it, i) => {
-    const x = 118 + (i % 4) * 223, base = i < 4 ? 152 : 168;
-    const tw = drawText(it[0], x, base, 'sansB11', INK);
-    drawText(it[1], x + tw + 6, base, 'sans11', BODYTX);
+// ------------------------------------------------------------------ map ---
+// Dotted world: one character per ~4.6 px cell, '#' marks land.
+const LANDMAP: string[] = [
+  "................................................................",
+  "....######..............##.....#########################........",
+  "..##########...........####...###########################.......",
+  "...########............##############################..##.......",
+  "....######.............####..####################..............",
+  ".....####....##.........###....##########..####................",
+  "......##....####........##......########....##......####.......",
+  "............######......#........######..............#####......",
+  "............#####............................##.......####......",
+  ".............###...............................................",
+  ".............##................................................",
+];
+
+function drawMap(): void {
+  strokeRect(14, 922, 296, 54, FRAME_LINE);
+  fillRect(15, 923, 294, 52, [214, 220, 218]);
+  for (let row = 0; row < LANDMAP.length; row++) {
+    for (let col = 0; col < LANDMAP[row].length; col++) {
+      const px = 17 + Math.round(col * 4.4);
+      const py = 925 + Math.round(row * 4.4);
+      if (LANDMAP[row][col] === "#") {
+        fillRect(px, py, 2, 2, [96, 102, 96]);
+      } else {
+        fillRect(px, py, 2, 2, [200, 206, 200]);
+      }
+    }
+  }
+  const pins: [number, number, RGB][] = [
+    [46, 940, REGION_RGB.Americas],
+    [60, 959, REGION_RGB.Americas],
+    [163, 937, REGION_RGB.Europe],
+    [163, 957, REGION_RGB.Africa],
+    [183, 945, REGION_RGB["Middle East"]],
+    [222, 951, REGION_RGB["Asia-Pacific"]],
+    [278, 960, REGION_RGB.Oceania],
+  ];
+  for (const [px, py, c] of pins) fillCircle(px, py, 8, c);
+
+  // segmented region bar under the map
+  const total = BAR_SEGMENTS.reduce((s, seg) => s + seg.count, 0);
+  let bx = 14;
+  BAR_SEGMENTS.forEach((seg, i) => {
+    const isLast = i === BAR_SEGMENTS.length - 1;
+    const bw = isLast ? 308 - bx : Math.round((seg.count / total) * 294);
+    fillRect(bx, 980, bw, 11, REGION_RGB[seg.region]);
+    bx += bw;
   });
-  LEADS.forEach((s, i) => {
-    const x = M + i * (leadGeom.w + 12), y = leadGeom.y;
-    numBadgeText(s.n, x + 16, y + 16);
-    const base = y + 2 + leadGeom.sceneH - 12;
-    if (s.factSub) drawText(s.factSub, x + 12, base - 54, 'sansB9', CREAM, 1);
-    drawText(s.fact, x + 13, base + 2, 'sansB42', [12, 10, 8]);
-    drawText(s.fact, x + 11, base, 'sansB42', CREAM);
-    drawText(s.tag + ' • ' + s.src, x + 16, y + leadGeom.sceneH + 20, 'sansB10', [255, 255, 255]);
-    drawTextR(s.region.toUpperCase(), x + leadGeom.w - 10, y + leadGeom.sceneH + 20, 'sans10', FAINT, 1);
-    const heads = wrap(s.head, 'serif19', leadGeom.w - 20);
-    heads.forEach((ln, li) => drawText(ln, x + 10, y + leadGeom.sceneH + 42 + li * 22, 'serif19', INK));
-    const briefs = wrap(s.brief, 'sans12', leadGeom.w - 20);
-    briefs.forEach((ln, li) => drawText(ln, x + 10, y + leadGeom.sceneH + 46 + heads.length * 22 + li * 15.5, 'sans12', BODYTX));
+  LEGEND_LINES.forEach((ln, i) => {
+    drawLine("sans10", ln, 14, 1001 + i * 10, INK);
   });
-  CARDS.forEach((s, i) => {
-    const row = i < 5 ? 0 : 1, col = i % 5;
-    const x = M + col * (gridGeom.w + 10.25), y = row ? gridGeom.y2 : gridGeom.y1;
-    numBadgeText(s.n, x + 13, y + 13);
-    drawText(s.fact, x + 9, y + gridGeom.sceneH - 6 + 2, 'sansB25', [12, 10, 8]);
-    drawText(s.fact, x + 7, y + gridGeom.sceneH - 6, 'sansB25', CREAM);
-    drawText(s.tag + ' • ' + s.src, x + 12, y + gridGeom.sceneH + 16, 'sansB9', [255, 255, 255]);
-    const chipEnd = x + 7 + textWidth(s.tag + ' • ' + s.src, 'sansB9') + 10;
-    const regW = textWidth(s.region.toUpperCase(), 'sans9', 0.5);
-    if (chipEnd + 8 < x + gridGeom.w - 7 - regW)
-      drawTextR(s.region.toUpperCase(), x + gridGeom.w - 7, y + gridGeom.sceneH + 16, 'sans9', FAINT, 0.5);
-    const heads = wrap(s.head, 'serif14', gridGeom.w - 14);
-    heads.forEach((ln, li) => drawText(ln, x + 7, y + gridGeom.sceneH + 32 + li * 16.5, 'serif14', INK));
-    const briefs = wrap(s.brief, 'sans10', gridGeom.w - 14);
-    briefs.forEach((ln, li) => drawText(ln, x + 7, y + gridGeom.sceneH + 32 + heads.length * 16.5 + 2 + li * 11.2, 'sans10', BODYTX));
-  });
-  drawText('THE REST OF THE DAY — in brief', M + 2, 786, 'sansB11', INK, 0.5);
-  REST.forEach((r, i) => {
-    const col = i < 11 ? 0 : 1, row = i % 11;
-    const x = col ? 519 : M, base = 800 + row * 11;
-    drawTextC(String(r[0]), x + 6, base + 0.2, 'sansB9', [255, 255, 255]);
-    let cx = drawText(r[2], x + 18, base, 'sansB10', INK);
-    drawText(' — ' + r[3], x + 18 + cx, base, 'sans10', BODYTX);
-  });
-  drawText('DATE CHECK — big stories we left out, with their real dates', 322, 930, 'sansB10', INK, 0.5);
-  DATECHECK.forEach((d, i) => {
-    const col = i < 7 ? 0 : 1, row = i % 7;
-    const x = col ? 676 : 322, base = 946 + row * 10.4;
-    let cx = drawText(d[0], x, base, 'sans9', INK);
-    cx += drawText(' — ' + d[1], x + cx, base, 'sansB9', RUST);
-    drawText(' · ' + d[2], x + cx, base, 'sans9', FAINT);
-  });
-  drawText('Europe 11 · Americas 10 · Middle East 5 · Asia-Pacific 4', M + 2, 999, 'sans9', BODYTX);
-  drawText('Africa 2 · Global 2 · Oceania 1 — bar + pins by region', M + 2, 1010, 'sans9', BODYTX);
-  let nx = drawText('NOT YET — after 23 Nov:  ', M + 2, 1020, 'sansB9', RUST);
-  drawText(NOTYET, M + 2 + nx, 1020, 'sans9', BODYTX, -0.35);
 }
 
-paintFurniture();
-downsample();
-paintText();
-mkdirSync('/output', { recursive: true });
-const png = encodePNG();
-writeFileSync('/output/entry.png', png);
-console.log('wrote /output/entry.png', png.length, 'bytes');
+// ----------------------------------------------------------------- page ---
+function composePage(): void {
+  frame.fill(0);
+  for (let i = 0; i < frame.length; i += 3) {
+    frame[i] = PAPER[0];
+    frame[i + 1] = PAPER[1];
+    frame[i + 2] = PAPER[2];
+  }
+
+  // masthead
+  drawLine("sansB10", "ONE DAY • ONE PAGE • 35 STORIES • 7 REGIONS", 14, 23, INK, 1);
+  drawLineRight("sansB10", "MONDAY EDITION", 1010, 23, INK, 1);
+  drawLineCentered("serif54", "THE WORLD IN ONE DAY", 512, 80, INK, 12);
+  fillRect(14, 90, 996, 3, INK);
+  fillRect(14, 96, 996, 1, INK);
+  drawLineCentered("serif23", "MONDAY 23 NOVEMBER 2026", 512, 124, INK, 1);
+  fillRect(14, 116, 316, 1, FRAME_LINE);
+  fillRect(692, 116, 318, 1, FRAME_LINE);
+
+  // the day in UTC
+  fillRect(15, 135, 994, 40, STRIP_BG);
+  strokeRect(14, 134, 996, 42, FRAME_LINE);
+  drawLine("sansB10", "THE DAY", 24, 151, INK);
+  drawLine("sansB10", "IN UTC", 24, 167, INK);
+  UTC_COLUMNS.forEach((col, ci) => {
+    const cx = 116 + ci * 231;
+    col.forEach((entry, ri) => {
+      const bar = entry.indexOf("|");
+      const time = entry.slice(0, bar);
+      const what = entry.slice(bar + 1);
+      const base = ri === 0 ? 153 : 167;
+      const end = drawLine("sansB11", time, cx, base, INK);
+      drawLine("sans11", what, end + 2, base, BODY_GRAY);
+    });
+  });
+
+  // three parallel leads
+  const leadX = [14, 350, 686];
+  LEADS.forEach((card, i) => drawCard(card, i + 1, leadX[i], 186, 324, true));
+
+  // ten illustrated grid cards, five across, two rows
+  const gridX = [14, 215, 416, 618, 819];
+  CARDS.forEach((card, i) => {
+    const gx = gridX[i % 5];
+    const gy = i < 5 ? 452 : 612;
+    drawCard(card, i + 4, gx, gy, 191, false, i < 5 ? 52 : 54);
+  });
+
+  // the rest of the day, in brief
+  fillRect(14, 770, 996, 1, FRAME_LINE);
+  const headEnd = drawLine("sansB11", "THE REST OF THE DAY", 14, 786, INK, 2);
+  drawLine("serif14", "— in brief", headEnd + 6, 786, INK);
+  BRIEFS.forEach((line, i) => {
+    const colX = i < 11 ? 14 : 527;
+    const base = 800 + (i % 11) * 11;
+    const colour = REGION_RGB[line.region];
+    fillCircle(colX + 8, base - 4, 7, colour);
+    drawLineCentered("sansB9", String(i + 14), colX + 8, base - 1, WHITE);
+    const whoEnd = drawLine("sansB11", line.who, colX + 19, base, BODY_GRAY);
+    drawLine("sans11", "— " + line.text, whoEnd + 1, base, BODY_GRAY);
+  });
+
+  // bottom band: map + date check
+  fillRect(14, 914, 996, 1, FRAME_LINE);
+  drawMap();
+  const dcEnd = drawLine("sansB11", "DATE CHECK", 323, 928, INK, 1);
+  drawLine(
+    "serif14",
+    "— big stories we left out, with their real dates",
+    dcEnd + 6,
+    928,
+    INK,
+  );
+  const drawCheck = (
+    items: typeof DATE_CHECK_LEFT,
+    x: number,
+  ): void => {
+    items.forEach((item, i) => {
+      const base = 946 + Math.round(i * (31 / 3));
+      // the whole line is measured first; if it would run past the next
+      // column it is compressed horizontally to fit its measure
+      const parts: [string, string, RGB][] = [
+        ["sans10", item.name, BODY_GRAY],
+        ["sans10", " — ", BODY_GRAY],
+        ["sansB10", item.date, ALERT_RED],
+        ["sans10", " · " + item.note, BODY_GRAY],
+      ];
+      const total = parts.reduce((s, [st, tx]) => s + textWidth(st, tx), 0);
+      const squash = Math.min(1, 348 / total);
+      let pen = x;
+      for (const [st, tx, c] of parts) {
+        pen =
+          squash < 1
+            ? drawLineSquash(st, tx, pen, base, c, squash)
+            : drawLine(st, tx, pen, base, c);
+      }
+    });
+  };
+  drawCheck(DATE_CHECK_LEFT, 323);
+  drawCheck(DATE_CHECK_RIGHT, 677);
+
+  // not yet: what the day has not reached
+  const nyEnd = drawLine("sansB9", "NOT YET — after 23 Nov:", 14, 1019, ALERT_RED);
+  drawLineSquash("sans10", NOT_YET_TEXT, nyEnd + 9, 1019, BODY_GRAY, 0.8);
+}
+
+function main(): void {
+  composePage();
+  const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+  mkdirSync(outDir, { recursive: true });
+  const png = encodePNG();
+  const target = join(outDir, "entry.png");
+  writeFileSync(target, png);
+  console.log(`wrote ${target} (${png.length} bytes)`);
+}
+
+main();
