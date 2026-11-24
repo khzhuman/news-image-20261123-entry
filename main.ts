@@ -851,7 +851,8 @@ function composePage() {
   }
   // the brief column
   BRIEFS.forEach(([label, region, txt], i) => {
-    const cx = i % 2 === 0 ? 534 : 774, by = 868 + Math.floor(i / 2) * 10.6;
+    const half = Math.ceil(BRIEFS.length / 2);
+    const cx = i < half ? 534 : 774, by = 868 + (i % half) * 10.6;
     drawText(frame, "sansB9", label, cx, by, REGION_COLORS[region] ?? INK);
     drawText(frame, "sans9", " — " + txt, cx + textW("sansB9", label), by, INK);
   });
